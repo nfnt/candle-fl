@@ -1,0 +1,14 @@
+[workspace]
+members  = ["coordinator", "worker"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Jan Schlicht <jan@jschlicht.dev>"]
+publish = false
+edition = "2021"
+
+[profile.release]
+lto   = true
+strip = true

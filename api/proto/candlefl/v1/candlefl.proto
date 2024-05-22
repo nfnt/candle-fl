@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package candlefl.v1;
+
+import "google/protobuf/empty.proto";
+
+import "coordinator.proto";
+import "worker.proto";
+
+service Subscriber {
+    // Subscribe to the coordinator for messages
+    rpc Subscribe(google.protobuf.Empty) returns (stream CoordinatorMessage) {}
+}
+
+service Publisher {
+    // Publish a message to the coordinator
+    rpc Publish(WorkerMessage) returns (google.protobuf.Empty) {}
+}
+
+service Command {
+    // Start federated learning with all connected workers
+    rpc Train(TrainRequest) returns (TrainResponse) {}
+}
+
+message TrainRequest {
+    uint64 rounds = 1;
+}
+
+message TrainResponse {
+    bytes weights = 1;
+}

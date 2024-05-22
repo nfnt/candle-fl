@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package candlefl.v1;
+
+message WorkerMessage {
+    oneof message {
+        WeightsResponse weights_response = 1;
+        FitResponse fit_response = 2;
+    }
+}
+
+message WeightsResponse {
+    string job_id = 1;
+    bytes weights = 2;
+}
+
+message FitResponse {
+    string job_id = 1;
+    bytes weights = 2;
+}
