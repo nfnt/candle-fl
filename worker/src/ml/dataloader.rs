@@ -7,7 +7,7 @@ pub struct Dataloader {
 }
 
 impl Dataloader {
-    pub fn new(inputs: Tensor, targets: Tensor, batch_size: usize) -> Self {
+    pub const fn new(inputs: Tensor, targets: Tensor, batch_size: usize) -> Self {
         Self {
             inputs,
             targets,
@@ -15,7 +15,7 @@ impl Dataloader {
         }
     }
 
-    pub fn iter(&self) -> DataloaderIterator {
+    pub const fn iter(&self) -> DataloaderIterator {
         DataloaderIterator {
             inputs: &self.inputs,
             targets: &self.targets,

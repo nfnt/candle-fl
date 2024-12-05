@@ -15,7 +15,7 @@ pub struct PublisherService {
 }
 
 impl PublisherService {
-    pub fn new(state: State) -> Self {
+    pub const fn new(state: State) -> Self {
         Self { state }
     }
 }

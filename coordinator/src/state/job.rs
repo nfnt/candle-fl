@@ -22,14 +22,14 @@ pub struct Job {
 
 impl Job {
     pub fn new(workers: Vec<Worker>) -> Self {
-        Job {
+        Self {
             id: Uuid::new_v4(),
             workers,
             tasks: HashMap::new(),
         }
     }
 
-    pub fn id(&self) -> Uuid {
+    pub const fn id(&self) -> Uuid {
         self.id
     }
 
@@ -136,18 +136,13 @@ impl Job {
             .collect::<Vec<_>>();
 
         tokio::spawn(async move {
-            let results = join_all(
-                tasks
-                    .into_iter()
-                    .map(|task| async move {
-                        match task.await {
-                            Ok(Ok(weights)) => Ok(weights),
-                            Ok(Err(e)) => Err(anyhow::anyhow!(e)),
-                            Err(e) => Err(anyhow::anyhow!(e)),
-                        }
-                    })
-                    .collect::<Vec<_>>(),
-            )
+            let results = join_all(tasks.into_iter().map(|task| async move {
+                match task.await {
+                    Ok(Ok(weights)) => Ok(weights),
+                    Ok(Err(e)) => Err(anyhow::anyhow!(e)),
+                    Err(e) => Err(anyhow::anyhow!(e)),
+                }
+            }))
             .await
             .into_iter()
             .collect::<Result<Vec<_>, anyhow::Error>>();

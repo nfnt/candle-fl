@@ -11,8 +11,8 @@ pub struct FedAvg {
 }
 
 impl FedAvg {
-    pub fn new(state: State) -> Self {
-        FedAvg { state }
+    pub const fn new(state: State) -> Self {
+        Self { state }
     }
 
     /// Fit model weights using federated averaging by training on data provided
@@ -28,7 +28,7 @@ impl FedAvg {
             info!(job_id = %job.id(), "starting round {}", round + 1);
             let local_weights = job.fit_round(weights.clone()).await?;
 
-            weights = average_weights(&local_weights)?;
+            weights = average_weights(&local_weights);
         }
 
         info!(job_id = %job.id(), "finished job");
@@ -37,12 +37,10 @@ impl FedAvg {
     }
 }
 
-fn average_weights(
-    tensors: &[HashMap<String, Tensor>],
-) -> Result<HashMap<String, Tensor>, candle_core::Error> {
+fn average_weights(tensors: &[HashMap<String, Tensor>]) -> HashMap<String, Tensor> {
     let num_tensors = tensors.len() as f64;
 
-    let result = tensors
+    tensors
         .iter()
         .fold(HashMap::new(), |result, tensor| {
             tensor.iter().fold(result, |mut result, (name, tensor)| {
@@ -56,9 +54,7 @@ fn average_weights(
         })
         .iter()
         .map(|(name, tensor)| (name.to_string(), (num_tensors.recip() * tensor).unwrap()))
-        .collect();
-
-    Ok(result)
+        .collect()
 }
 
 #[cfg(test)]
@@ -80,7 +76,7 @@ mod tests {
         map.insert("b".to_string(), tensor2);
         tensors.push(map);
 
-        let result = average_weights(&tensors)?;
+        let result = average_weights(&tensors);
 
         assert_eq!(result.len(), 2);
         assert_eq!(
@@ -116,7 +112,7 @@ mod tests {
         map.insert("b".to_string(), tensor4);
         tensors.push(map);
 
-        let result = average_weights(&tensors)?;
+        let result = average_weights(&tensors);
 
         assert_eq!(result.len(), 2);
         assert_eq!(

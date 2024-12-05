@@ -31,13 +31,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect()
         .await?;
 
-    info!(uri = uri.to_string(), "connected to coordinator");
+    info!(
+        uri = uri.to_string(),
+        "connected to coordinator, sending training request"
+    );
 
-    let mut command_client = CommandClient::new(channel.clone());
-
-    info!(uri = uri.to_string(), "sending training request");
-
-    let _response = command_client
+    let _response = CommandClient::new(channel.clone())
         .train(TrainRequest {
             rounds: args.rounds,
         })

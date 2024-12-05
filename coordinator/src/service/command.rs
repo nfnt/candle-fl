@@ -11,7 +11,7 @@ pub struct CommandService {
 }
 
 impl CommandService {
-    pub fn new(state: State) -> Self {
+    pub const fn new(state: State) -> Self {
         Self { state }
     }
 }

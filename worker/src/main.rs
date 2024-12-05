@@ -33,12 +33,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uri: Uri = format!("http://{}", args.addr).parse()?;
 
     let channel = Channel::builder(uri.clone())
-        .user_agent("candle-fl-worker/0.1.0")?
+        .user_agent(format!("candle-fl-worker/{}", env!("CARGO_PKG_VERSION")))?
         .connect()
         .await?;
-    let mut subscriber_client = SubscriberClient::new(channel.clone());
-
-    let mut stream = subscriber_client.subscribe(()).await?.into_inner();
+    let mut stream = SubscriberClient::new(channel.clone())
+        .subscribe(())
+        .await?
+        .into_inner();
 
     info!(uri = uri.to_string(), "connected to coordinator");
 
@@ -69,9 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     task::spawn(async move {
                         let result = receiver.await.unwrap();
 
-                        let mut publisher_client = PublisherClient::new(channel);
-
-                        publisher_client
+                        PublisherClient::new(channel)
                             .publish(WorkerMessage {
                                 message: Some(worker_message::Message::WeightsResponse(
                                     WeightsResponse {
@@ -108,9 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     task::spawn(async move {
                         let result = receiver.await.unwrap();
 
-                        let mut publisher_client = PublisherClient::new(channel);
-
-                        publisher_client
+                        PublisherClient::new(channel)
                             .publish(WorkerMessage {
                                 message: Some(worker_message::Message::FitResponse(FitResponse {
                                     job_id: fit_request.job_id.clone(),

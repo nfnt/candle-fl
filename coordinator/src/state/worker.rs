@@ -12,15 +12,18 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(addr: SocketAddr, sender: mpsc::Sender<Result<CoordinatorMessage, Status>>) -> Self {
-        Worker { addr, sender }
+    pub const fn new(
+        addr: SocketAddr,
+        sender: mpsc::Sender<Result<CoordinatorMessage, Status>>,
+    ) -> Self {
+        Self { addr, sender }
     }
 
-    pub fn addr(&self) -> SocketAddr {
+    pub const fn addr(&self) -> SocketAddr {
         self.addr
     }
 
-    pub fn sender(&self) -> &mpsc::Sender<Result<CoordinatorMessage, Status>> {
+    pub const fn sender(&self) -> &mpsc::Sender<Result<CoordinatorMessage, Status>> {
         &self.sender
     }
 }

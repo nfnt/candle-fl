@@ -24,7 +24,7 @@ pub struct InMemoryState {
 
 impl InMemoryState {
     pub fn new() -> Self {
-        InMemoryState {
+        Self {
             workers: Vec::new(),
             jobs: HashMap::new(),
         }

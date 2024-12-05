@@ -18,7 +18,7 @@ pub struct Job<'a> {
 }
 
 impl<'a> Job<'a> {
-    pub fn id(&self) -> Uuid {
+    pub const fn id(&self) -> Uuid {
         self.job_id
     }
 
@@ -69,7 +69,7 @@ impl State {
         let (sender, receiver) = mpsc::channel(32);
         tokio::spawn(handler(receiver));
 
-        State { sender }
+        Self { sender }
     }
 
     pub async fn add_worker(
