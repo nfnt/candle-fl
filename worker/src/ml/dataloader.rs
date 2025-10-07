@@ -15,7 +15,7 @@ impl Dataloader {
         }
     }
 
-    pub const fn iter(&self) -> DataloaderIterator {
+    pub const fn iter(&self) -> DataloaderIterator<'_> {
         DataloaderIterator {
             inputs: &self.inputs,
             targets: &self.targets,

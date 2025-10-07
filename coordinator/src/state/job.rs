@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{
-    candlefl::{coordinator_message, CoordinatorMessage, FitRequest, WeightsRequest},
+    candlefl::{CoordinatorMessage, FitRequest, WeightsRequest, coordinator_message},
     state::worker::Worker,
 };
 

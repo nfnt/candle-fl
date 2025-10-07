@@ -7,8 +7,8 @@ use tonic::transport::{Channel, Uri};
 use tracing::{debug, info};
 
 use crate::candlefl::{
-    publisher_client::PublisherClient, subscriber_client::SubscriberClient, worker_message,
-    FitResponse, WeightsResponse, WorkerMessage,
+    FitResponse, WeightsResponse, WorkerMessage, publisher_client::PublisherClient,
+    subscriber_client::SubscriberClient, worker_message,
 };
 use crate::ml::{prepare_data, prepare_model, train};
 
@@ -135,6 +135,6 @@ fn serialize(varmap: &VarMap) -> Result<Vec<u8>, SafeTensorError> {
     safetensors::serialize(data, &None)
 }
 
-fn deserialize(data: &[u8]) -> Result<SafeTensors, SafeTensorError> {
+fn deserialize(data: &[u8]) -> Result<SafeTensors<'_>, SafeTensorError> {
     safetensors::SafeTensors::deserialize(data)
 }

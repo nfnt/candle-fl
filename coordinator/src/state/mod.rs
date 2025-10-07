@@ -88,7 +88,7 @@ impl State {
         receiver.await?
     }
 
-    pub async fn add_job(&self) -> Result<Job, anyhow::Error> {
+    pub async fn add_job(&self) -> Result<Job<'_>, anyhow::Error> {
         let (response, receiver) = oneshot::channel();
         self.sender.send(Command::AddJob { response }).await?;
 

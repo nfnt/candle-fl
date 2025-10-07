@@ -2,7 +2,7 @@ use clap::Parser;
 use tonic::transport::{Channel, Uri};
 use tracing::info;
 
-use crate::candlefl::{command_client::CommandClient, TrainRequest};
+use crate::candlefl::{TrainRequest, command_client::CommandClient};
 
 mod candlefl {
     tonic::include_proto!("candlefl.v1");

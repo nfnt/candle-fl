@@ -1,7 +1,7 @@
 use tonic::{Request, Response, Status};
 
 use crate::{
-    candlefl::{command_server::Command, TrainRequest, TrainResponse},
+    candlefl::{TrainRequest, TrainResponse, command_server::Command},
     state::State,
     strategy::FedAvg,
 };

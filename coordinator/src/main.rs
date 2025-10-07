@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let publisher_service = PublisherService::new(state.clone());
     let subscriber_service = SubscriberService::new(state.clone());
 
-    let (mut health_reporter, health_service) = health_reporter();
+    let (health_reporter, health_service) = health_reporter();
     health_reporter
         .set_serving::<PublisherServer<PublisherService>>()
         .await;

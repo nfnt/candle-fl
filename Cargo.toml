@@ -7,7 +7,7 @@ version = "0.1.0"
 license = "Apache-2.0"
 authors = ["Jan Schlicht <jan@jschlicht.dev>"]
 publish = false
-edition = "2021"
+edition = "2024"
 
 [profile.release]
 lto   = true

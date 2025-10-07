@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use candle_core::{safetensors::load_buffer, Device, Tensor};
+use candle_core::{Device, Tensor, safetensors::load_buffer};
 use tonic::{Request, Response, Status};
 use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    candlefl::{publisher_server::Publisher, worker_message, WorkerMessage},
+    candlefl::{WorkerMessage, publisher_server::Publisher, worker_message},
     state::State,
 };
 

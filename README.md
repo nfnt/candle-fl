@@ -32,11 +32,11 @@ a model on their local data and send the trained model back to the coordinator.
 
 ## Usage
 
-Build the project with `cargo build -r` and start the coordinator with
-`cargo run -r --bin coordinator` then connect one or more workers with
-`cargo run -r --bin worker`. With the workers connected, start a training run
-with `cargo run -r --bin start_training 10`. This will train the model for 10
-rounds. For example:
+Ensure that you have `protoc` installed and in `$PATH`.
+Start the coordinator with `cargo run -r --bin coordinator` then connect one
+or more workers with `cargo run -r --bin worker`. With the workers connected,
+start a training run with `cargo run -r --bin start_training 10`. This will
+train the model for 10 rounds. For example:
 
 ```shell
 $ cargo run -r --bin coordinator &

@@ -7,7 +7,7 @@ use tonic::{Request, Response, Status};
 use tracing::info;
 
 use crate::{
-    candlefl::{subscriber_server::Subscriber, CoordinatorMessage},
+    candlefl::{CoordinatorMessage, subscriber_server::Subscriber},
     state::State,
 };
 

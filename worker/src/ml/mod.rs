@@ -1,5 +1,5 @@
-use candle_core::{safetensors::Load, DType, Device, Error, D};
-use candle_nn::{loss, ops, Optimizer, VarBuilder, VarMap, SGD};
+use candle_core::{D, DType, Device, Error, safetensors::Load};
+use candle_nn::{Optimizer, SGD, VarBuilder, VarMap, loss, ops};
 use safetensors::SafeTensors;
 use tracing::info;
 

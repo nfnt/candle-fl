@@ -1,5 +1,5 @@
 use candle_core::{Error, Tensor};
-use candle_nn::{linear, Linear, Module, VarBuilder};
+use candle_nn::{Linear, Module, VarBuilder, linear};
 
 pub struct Model {
     ln1: Linear,
