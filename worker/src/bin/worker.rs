@@ -5,17 +5,13 @@ use safetensors::{SafeTensorError, SafeTensors};
 use tokio::task;
 use tonic::transport::{Channel, Uri};
 use tracing::{debug, info};
-
-use crate::candlefl::{
-    FitResponse, WeightsResponse, WorkerMessage, publisher_client::PublisherClient,
-    subscriber_client::SubscriberClient, worker_message,
+use worker::{
+    candlefl::{
+        self, FitResponse, WeightsResponse, WorkerMessage, publisher_client::PublisherClient,
+        subscriber_client::SubscriberClient, worker_message,
+    },
+    ml::{prepare_data, prepare_model, train},
 };
-use crate::ml::{prepare_data, prepare_model, train};
-
-mod candlefl {
-    tonic::include_proto!("candlefl.v1");
-}
-mod ml;
 
 #[derive(Parser)]
 #[command(version)]

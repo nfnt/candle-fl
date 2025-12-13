@@ -1,11 +1,7 @@
 use std::net::SocketAddr;
 
 use clap::Parser;
-use tonic::transport::Server;
-use tonic_health::server::health_reporter;
-use tracing::info;
-
-use crate::{
+use coordinator::{
     candlefl::{
         command_server::CommandServer, publisher_server::PublisherServer,
         subscriber_server::SubscriberServer,
@@ -13,13 +9,9 @@ use crate::{
     service::{CommandService, PublisherService, SubscriberService},
     state::State,
 };
-
-mod candlefl {
-    tonic::include_proto!("candlefl.v1");
-}
-mod service;
-mod state;
-mod strategy;
+use tonic::transport::Server;
+use tonic_health::server::health_reporter;
+use tracing::info;
 
 #[derive(Parser)]
 #[command(version)]

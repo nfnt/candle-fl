@@ -1,7 +1,10 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use candle_core::Tensor;
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task,
+};
 use tonic::Status;
 use uuid::Uuid;
 
@@ -70,7 +73,7 @@ pub struct State {
 impl State {
     pub fn new() -> Self {
         let (sender, receiver) = mpsc::channel(32);
-        tokio::spawn(handler(receiver));
+        task::spawn(handler(receiver));
 
         Self { sender }
     }

@@ -56,7 +56,7 @@ impl Job {
                 let (sender, receiver) = oneshot::channel();
                 self.tasks.insert(worker.addr(), Box::new(sender));
 
-                tokio::spawn(async move {
+                task::spawn(async move {
                     debug!(
                         job_id = %job_id,
                         addr = %worker.addr(),
@@ -128,7 +128,7 @@ impl Job {
             });
         }
 
-        let _task = tokio::spawn(async move {
+        let _task = task::spawn(async move {
             let results = join_set
                 .join_all()
                 .await
