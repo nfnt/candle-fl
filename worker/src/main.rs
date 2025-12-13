@@ -1,8 +1,8 @@
-use candle_core::{Device, Error};
+use candle_core::Device;
 use candle_nn::VarMap;
 use clap::Parser;
 use safetensors::{SafeTensorError, SafeTensors};
-use tokio::{sync::oneshot, task};
+use tokio::task;
 use tonic::transport::{Channel, Uri};
 use tracing::{debug, info};
 
@@ -53,22 +53,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let channel = channel.clone();
 
-                    let (sender, receiver) = oneshot::channel();
-
-                    // This is a blocking operation, so we'll offload it
-                    task::spawn_blocking(move || {
-                        let result = || -> Result<_, Error> {
-                            let dev = Device::Cpu;
-                            let (varmap, _) = prepare_model(&dev)?;
-
-                            Ok(varmap)
-                        }();
-
-                        let _ = sender.send(result);
-                    });
-
                     task::spawn(async move {
-                        let result = receiver.await.unwrap();
+                        // This is a blocking operation, so we'll offload it
+                        let result = task::spawn_blocking(move || {
+                            let dev = Device::Cpu;
+                            prepare_model(&dev).map(|(v, _)| v)
+                        })
+                        .await
+                        .unwrap();
 
                         PublisherClient::new(channel)
                             .publish(WorkerMessage {
@@ -90,22 +82,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let channel = channel.clone();
 
-                    let (sender, receiver) = oneshot::channel();
-
-                    // This is a blocking operation, so we'll offload it
-                    task::spawn_blocking(move || {
-                        let result = || -> Result<_, Error> {
+                    task::spawn(async move {
+                        // This is a blocking operation, so we'll offload it
+                        let result = task::spawn_blocking(move || {
                             let dev = Device::Cpu;
                             let data = prepare_data(&dev)?;
 
                             train(&deserialize(&fit_request.weights)?, &data, &dev)
-                        }();
-
-                        let _ = sender.send(result);
-                    });
-
-                    task::spawn(async move {
-                        let result = receiver.await.unwrap();
+                        })
+                        .await
+                        .unwrap();
 
                         PublisherClient::new(channel)
                             .publish(WorkerMessage {

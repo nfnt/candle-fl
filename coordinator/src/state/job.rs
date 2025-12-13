@@ -1,8 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use candle_core::Tensor;
-use futures_util::future::join_all;
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, task};
 use tonic::Status;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -100,52 +99,42 @@ impl Job {
             })),
         };
 
-        let tasks = self
-            .workers
-            .iter()
-            .map(|worker| {
-                let worker = worker.clone();
-                let message = message.clone();
+        let mut join_set = task::JoinSet::new();
 
-                let (sender, receiver) = oneshot::channel();
-                self.tasks.insert(worker.addr(), Box::new(sender));
+        for worker in &self.workers {
+            let worker = worker.clone();
+            let message = message.clone();
 
-                tokio::spawn(async move {
-                    debug!(
+            let (sender, receiver) = oneshot::channel();
+            self.tasks.insert(worker.addr(), Box::new(sender));
+
+            join_set.spawn(async move {
+                debug!(
+                    job_id = %job_id,
+                    addr = %worker.addr(),
+                    "sending FitRequest"
+                );
+
+                if let Err(e) = worker.sender().send(Result::<_, Status>::Ok(message)).await {
+                    warn!(
                         job_id = %job_id,
                         addr = %worker.addr(),
-                        "sending FitRequest"
+                        error = %e,
+                        "failed to send FitRequest"
                     );
-
-                    if let Err(e) = worker
-                        .sender()
-                        .send(Result::<_, Status>::Ok(message.clone()))
-                        .await
-                    {
-                        warn!(
-                            job_id = %job_id,
-                            addr = %worker.addr(),
-                            error = %e,
-                            "failed to send FitRequest"
-                        );
-                    }
-
-                    receiver.await
-                })
-            })
-            .collect::<Vec<_>>();
-
-        tokio::spawn(async move {
-            let results = join_all(tasks.into_iter().map(|task| async move {
-                match task.await {
-                    Ok(Ok(weights)) => Ok(weights),
-                    Ok(Err(e)) => Err(anyhow::anyhow!(e)),
-                    Err(e) => Err(anyhow::anyhow!(e)),
                 }
-            }))
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, anyhow::Error>>();
+
+                receiver.await
+            });
+        }
+
+        let _task = tokio::spawn(async move {
+            let results = join_set
+                .join_all()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!(e));
 
             if response.send(results).is_err() {
                 warn!("failed to set response");

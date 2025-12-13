@@ -1,8 +1,7 @@
 use std::pin::Pin;
 
-use futures_util::Stream;
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status};
 use tracing::info;
 

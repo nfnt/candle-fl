@@ -5,7 +5,10 @@ use tokio::sync::{mpsc, oneshot};
 use tonic::Status;
 use uuid::Uuid;
 
-use crate::{candlefl::CoordinatorMessage, state::inmemory_state::InMemoryState};
+use crate::{
+    candlefl::CoordinatorMessage,
+    state::{inmemory_state::InMemoryState, worker::Worker},
+};
 
 mod inmemory_state;
 mod job;
@@ -160,7 +163,7 @@ async fn handler(mut receiver: mpsc::Receiver<Command>) {
                 sender,
                 response,
             } => {
-                state.add_worker(addr, sender, response);
+                state.add_worker(Worker::new(addr, sender), response);
             }
             Command::AddJob { response } => {
                 state.add_job(response);

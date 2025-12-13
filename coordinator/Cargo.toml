@@ -10,7 +10,6 @@ edition.workspace = true
 anyhow = { version = "1.0.86" }
 candle-core = { version = "0.9.1" }
 clap = { version = "4.5.4", features = ["derive"] }
-futures-util = { version = "0.3.30" }
 prost = { version = "0.14.1" }
 safetensors = { version = "0.4.3" }
 tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread", "sync"] }

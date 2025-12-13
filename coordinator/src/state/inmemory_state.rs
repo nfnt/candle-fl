@@ -1,15 +1,11 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use candle_core::Tensor;
-use tokio::sync::{mpsc, oneshot};
-use tonic::Status;
+use tokio::sync::oneshot;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::{
-    candlefl::CoordinatorMessage,
-    state::{job::Job, worker::Worker},
-};
+use crate::state::{job::Job, worker::Worker};
 
 /// In-memory state for the coordinator.
 ///
@@ -32,11 +28,10 @@ impl InMemoryState {
 
     pub fn add_worker(
         &mut self,
-        addr: SocketAddr,
-        sender: mpsc::Sender<Result<CoordinatorMessage, Status>>,
+        worker: Worker,
         response: oneshot::Sender<Result<(), anyhow::Error>>,
     ) {
-        self.workers.push(Worker::new(addr, sender));
+        self.workers.push(worker);
 
         if response.send(Ok(())).is_err() {
             warn!("failed to set response");
