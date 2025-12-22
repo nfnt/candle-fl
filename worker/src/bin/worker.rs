@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?
         .into_inner();
 
-    info!(uri = uri.to_string(), "connected to coordinator");
+    info!(%uri, "connected to coordinator");
 
     // In production code we need to handle stream disconnections by retrying
     // if a connection is dropped. This isn't done here.
@@ -56,21 +56,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             prepare_model(&dev).map(|(v, _)| v)
                         })
                         .await
-                        .unwrap();
+                        .expect("task doesn't panic");
 
-                        PublisherClient::new(channel)
+                        let result = match result {
+                            Ok(result) => result,
+                            Err(e) => {
+                                debug!(
+                                    job_id = weights_request.job_id,
+                                    "failed to prepare model: {}", e
+                                );
+                                return;
+                            }
+                        };
+
+                        let weights = match serialize(&result) {
+                            Ok(weights) => weights,
+                            Err(e) => {
+                                debug!(
+                                    job_id = weights_request.job_id,
+                                    "failed to serialize weights: {}", e
+                                );
+                                return;
+                            }
+                        };
+
+                        match PublisherClient::new(channel)
                             .publish(WorkerMessage {
                                 message: Some(worker_message::Message::WeightsResponse(
                                     WeightsResponse {
                                         job_id: weights_request.job_id.clone(),
-                                        weights: serialize(&result.unwrap()).unwrap(),
+                                        weights,
                                     },
                                 )),
                             })
                             .await
-                            .unwrap();
-
-                        debug!(job_id = weights_request.job_id, "sent WeightsResponse");
+                        {
+                            Ok(_) => {
+                                debug!(job_id = weights_request.job_id, "sent WeightsResponse");
+                            }
+                            Err(status) => {
+                                debug!(
+                                    job_id = weights_request.job_id,
+                                    "failed to send WeightsResponse: {}", status
+                                );
+                            }
+                        }
                     });
                 }
                 candlefl::coordinator_message::Message::FitRequest(fit_request) => {
@@ -87,19 +117,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             train(&deserialize(&fit_request.weights)?, &data, &dev)
                         })
                         .await
-                        .unwrap();
+                        .expect("task doesn't panic");
 
-                        PublisherClient::new(channel)
+                        let result = match result {
+                            Ok(result) => result,
+                            Err(e) => {
+                                debug!(
+                                    job_id = fit_request.job_id,
+                                    "failed to prepare model: {}", e
+                                );
+                                return;
+                            }
+                        };
+
+                        let weights = match serialize(&result) {
+                            Ok(weights) => weights,
+                            Err(e) => {
+                                debug!(
+                                    job_id = fit_request.job_id,
+                                    "failed to serialize weights: {}", e
+                                );
+                                return;
+                            }
+                        };
+
+                        match PublisherClient::new(channel)
                             .publish(WorkerMessage {
                                 message: Some(worker_message::Message::FitResponse(FitResponse {
                                     job_id: fit_request.job_id.clone(),
-                                    weights: serialize(&result.unwrap()).unwrap(),
+                                    weights,
                                 })),
                             })
                             .await
-                            .unwrap();
-
-                        debug!(job_id = fit_request.job_id, "sent FitResponse");
+                        {
+                            Ok(_) => {
+                                debug!(job_id = fit_request.job_id, "sent FitResponse");
+                            }
+                            Err(status) => {
+                                debug!(
+                                    job_id = fit_request.job_id,
+                                    "failed to send FitResponse: {}", status
+                                );
+                            }
+                        }
                     });
                 }
             }
@@ -109,12 +169,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn serialize(varmap: &VarMap) -> Result<Vec<u8>, SafeTensorError> {
-    let tensor_data = varmap.data().lock().unwrap();
+fn serialize(varmap: &VarMap) -> Result<Vec<u8>, Box<dyn std::error::Error + '_>> {
+    let tensor_data = varmap.data().lock()?;
 
     let data = tensor_data.iter().map(|(k, v)| (k, v.as_tensor()));
 
-    safetensors::serialize(data, &None)
+    Ok(safetensors::serialize(data, &None)?)
 }
 
 fn deserialize(data: &[u8]) -> Result<SafeTensors<'_>, SafeTensorError> {

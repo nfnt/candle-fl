@@ -7,7 +7,7 @@ pub struct Model {
 }
 
 impl Model {
-    pub fn new(vs: &VarBuilder) -> Result<Self, Error> {
+    pub fn try_new(vs: &VarBuilder) -> Result<Self, Error> {
         let ln1 = linear(28 * 28, 100, vs.push_prefix("ln1"))?;
         let ln2 = linear(100, 10, vs.push_prefix("ln2"))?;
 

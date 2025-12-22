@@ -7,7 +7,6 @@ publish.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow = { version = "1.0.86" }
 candle-core = { version = "0.9.1" }
 candle-datasets = { version = "0.9.1" }
 candle-nn = { version = "0.9.1" }

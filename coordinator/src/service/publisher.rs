@@ -23,7 +23,7 @@ impl PublisherService {
 #[tonic::async_trait]
 impl Publisher for PublisherService {
     async fn publish(&self, request: Request<WorkerMessage>) -> Result<Response<()>, Status> {
-        let addr = request.remote_addr().unwrap();
+        let addr = request.remote_addr().expect("a remote address");
 
         if let Some(message) = request.into_inner().message {
             match message {
@@ -47,7 +47,7 @@ impl Publisher for PublisherService {
                     self.state
                         .set_fit_result(job_id, addr, weights)
                         .await
-                        .unwrap();
+                        .map_err(|e| Status::from_error(Box::new(e)))?;
                 }
                 worker_message::Message::FitResponse(fit_response) => {
                     debug!(
@@ -68,7 +68,7 @@ impl Publisher for PublisherService {
                     self.state
                         .set_fit_result(job_id, addr, weights)
                         .await
-                        .unwrap();
+                        .map_err(|e| Status::from_error(Box::new(e)))?;
                 }
             }
         }

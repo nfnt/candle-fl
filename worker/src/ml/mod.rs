@@ -23,7 +23,7 @@ pub fn prepare_model(dev: &Device) -> Result<(VarMap, Model), Error> {
     let vs = VarBuilder::from_varmap(&varmap, DType::F32, dev);
 
     // Creating the model builds 'varmap' parameters
-    let model = Model::new(&vs)?;
+    let model = Model::try_new(&vs)?;
 
     Ok((varmap, model))
 }

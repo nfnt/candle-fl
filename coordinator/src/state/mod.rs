@@ -1,11 +1,11 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use candle_core::Tensor;
+use thiserror::Error;
 use tokio::{
     sync::{mpsc, oneshot},
     task,
 };
-use tonic::Status;
 use uuid::Uuid;
 
 use crate::{
@@ -17,7 +17,21 @@ mod inmemory_state;
 mod job;
 mod worker;
 
-#[derive(Clone)]
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("unknown job \"{0}\"")]
+    UnknownJob(Uuid),
+    #[error("failed to set result for worker \"{0}\"")]
+    ResultNotSet(SocketAddr),
+    #[error("unknown completer for worker \"{0}\"")]
+    UnknownCompleter(SocketAddr),
+    #[error("failed to receive worker response: {0}")]
+    Receive(#[from] oneshot::error::RecvError),
+    #[error("tensor operation failed: {0}")]
+    Candle(#[from] candle_core::Error),
+}
+
+#[derive(Clone, Debug)]
 pub struct Job<'a> {
     job_id: Uuid,
     state: &'a State,
@@ -32,7 +46,7 @@ impl<'a> Job<'a> {
     ///
     /// The initial weights can be used to ensure that each worker
     /// starts training with the same weights.
-    pub async fn get_weights(&self) -> Result<HashMap<String, Tensor>, anyhow::Error> {
+    pub async fn get_weights(&self) -> Result<HashMap<String, Tensor>, Error> {
         let (response, receiver) = oneshot::channel();
         self.state
             .sender
@@ -40,8 +54,9 @@ impl<'a> Job<'a> {
                 job_id: self.job_id,
                 response,
             })
-            .await?;
-        receiver.await?
+            .await
+            .expect("a running handler task");
+        receiver.await.expect("a response from the handler task")
     }
 
     /// Perform a single round of training on all workers associated with this job.
@@ -51,7 +66,7 @@ impl<'a> Job<'a> {
     pub async fn fit_round(
         &self,
         weights: HashMap<String, Tensor>,
-    ) -> Result<Vec<HashMap<String, Tensor>>, anyhow::Error> {
+    ) -> Result<Vec<HashMap<String, Tensor>>, Error> {
         let (response, receiver) = oneshot::channel();
         self.state
             .sender
@@ -60,12 +75,13 @@ impl<'a> Job<'a> {
                 weights,
                 response,
             })
-            .await?;
-        receiver.await?
+            .await
+            .expect("a running handler task");
+        receiver.await.expect("a response from the handler task")
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct State {
     sender: mpsc::Sender<Command>,
 }
@@ -81,8 +97,8 @@ impl State {
     pub async fn add_worker(
         &self,
         addr: SocketAddr,
-        sender: mpsc::Sender<Result<CoordinatorMessage, Status>>,
-    ) -> Result<(), anyhow::Error> {
+        sender: mpsc::Sender<CoordinatorMessage>,
+    ) -> () {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Command::AddWorker {
@@ -90,20 +106,24 @@ impl State {
                 sender,
                 response,
             })
-            .await?;
-        receiver.await?
+            .await
+            .expect("a running handler task");
+        receiver.await.expect("a response from the handler task");
     }
 
-    pub async fn add_job(&self) -> Result<Job<'_>, anyhow::Error> {
+    pub async fn add_job(&self) -> Job<'_> {
         let (response, receiver) = oneshot::channel();
-        self.sender.send(Command::AddJob { response }).await?;
+        self.sender
+            .send(Command::AddJob { response })
+            .await
+            .expect("a running handler task");
 
-        let job_id = receiver.await??;
+        let job_id = receiver.await.expect("a response from the handler task");
 
-        Ok(Job {
+        Job {
             job_id,
             state: self,
-        })
+        }
     }
 
     pub async fn set_fit_result(
@@ -111,7 +131,7 @@ impl State {
         job_id: Uuid,
         addr: SocketAddr,
         weights: HashMap<String, Tensor>,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<(), Error> {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Command::SetFitResult {
@@ -120,8 +140,15 @@ impl State {
                 weights,
                 response,
             })
-            .await?;
-        receiver.await?
+            .await
+            .expect("a running handler task");
+        receiver.await.expect("a response from the handler task")
+    }
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -129,11 +156,11 @@ impl State {
 enum Command {
     AddWorker {
         addr: SocketAddr,
-        sender: mpsc::Sender<Result<CoordinatorMessage, Status>>,
-        response: CommandResponse<()>,
+        sender: mpsc::Sender<CoordinatorMessage>,
+        response: oneshot::Sender<()>,
     },
     AddJob {
-        response: CommandResponse<Uuid>,
+        response: oneshot::Sender<Uuid>,
     },
     GetWeights {
         job_id: Uuid,
@@ -152,7 +179,7 @@ enum Command {
     },
 }
 
-type CommandResponse<T> = oneshot::Sender<Result<T, anyhow::Error>>;
+type CommandResponse<T> = oneshot::Sender<Result<T, Error>>;
 
 async fn handler(mut receiver: mpsc::Receiver<Command>) {
     let mut state = InMemoryState::new();

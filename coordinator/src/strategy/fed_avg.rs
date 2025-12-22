@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use candle_core::Tensor;
 use tracing::info;
 
-use crate::state::State;
+use crate::state::{Error, State};
 
 /// [FederatedAveraging](https://arxiv.org/abs/1602.05629)
 pub struct FedAvg {
@@ -17,8 +17,8 @@ impl FedAvg {
 
     /// Fit model weights using federated averaging by training on data provided
     /// by connected workers.
-    pub async fn fit(&self, num_rounds: usize) -> Result<HashMap<String, Tensor>, anyhow::Error> {
-        let job = self.state.add_job().await?;
+    pub async fn fit(&self, num_rounds: usize) -> Result<HashMap<String, Tensor>, Error> {
+        let job = self.state.add_job().await;
 
         info!(job_id = %job.id(), "starting job");
 
@@ -28,7 +28,7 @@ impl FedAvg {
             info!(job_id = %job.id(), "starting round {}", round + 1);
             let local_weights = job.fit_round(weights.clone()).await?;
 
-            weights = average_weights(&local_weights);
+            weights = average_weights(local_weights)?;
         }
 
         info!(job_id = %job.id(), "finished job");
@@ -37,24 +37,31 @@ impl FedAvg {
     }
 }
 
-fn average_weights(tensors: &[HashMap<String, Tensor>]) -> HashMap<String, Tensor> {
+fn average_weights(
+    tensors: Vec<HashMap<String, Tensor>>,
+) -> Result<HashMap<String, Tensor>, Error> {
     let num_tensors = tensors.len() as f64;
 
-    tensors
-        .iter()
-        .fold(HashMap::new(), |result, tensor| {
-            tensor.iter().fold(result, |mut result, (name, tensor)| {
-                if let Some(existing) = result.get(name) {
-                    result.insert(name.to_string(), (existing + tensor).unwrap());
-                } else {
-                    result.insert(name.to_string(), tensor.clone());
-                }
-                result
-            })
-        })
-        .iter()
-        .map(|(name, tensor)| (name.to_string(), (num_tensors.recip() * tensor).unwrap()))
-        .collect()
+    Ok(tensors
+        .into_iter()
+        .try_fold(HashMap::new(), |result, tensor| {
+            tensor
+                .into_iter()
+                .try_fold(result, |mut result, (name, tensor)| {
+                    if let Some(existing) = result.get(&name) {
+                        result.insert(name.to_string(), (existing + tensor)?);
+                    } else {
+                        result.insert(name.to_string(), tensor);
+                    }
+
+                    Ok::<_, candle_core::Error>(result)
+                })
+        })?
+        .into_iter()
+        .map(|(name, tensor)| (num_tensors.recip() * tensor).map(|t| (name, t)))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .collect())
 }
 
 #[cfg(test)]
@@ -76,7 +83,7 @@ mod tests {
         map.insert("b".to_string(), tensor2);
         tensors.push(map);
 
-        let result = average_weights(&tensors);
+        let result = average_weights(tensors).unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(
@@ -112,7 +119,7 @@ mod tests {
         map.insert("b".to_string(), tensor4);
         tensors.push(map);
 
-        let result = average_weights(&tensors);
+        let result = average_weights(tensors).unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(

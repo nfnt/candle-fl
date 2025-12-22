@@ -5,7 +5,7 @@ use tokio::sync::oneshot;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::state::{job::Job, worker::Worker};
+use crate::state::{Error, job::Job, worker::Worker};
 
 /// In-memory state for the coordinator.
 ///
@@ -26,24 +26,20 @@ impl InMemoryState {
         }
     }
 
-    pub fn add_worker(
-        &mut self,
-        worker: Worker,
-        response: oneshot::Sender<Result<(), anyhow::Error>>,
-    ) {
+    pub fn add_worker(&mut self, worker: Worker, response: oneshot::Sender<()>) {
         self.workers.push(worker);
 
-        if response.send(Ok(())).is_err() {
+        if response.send(()).is_err() {
             warn!("failed to set response");
         }
     }
 
-    pub fn add_job(&mut self, response: oneshot::Sender<Result<Uuid, anyhow::Error>>) {
+    pub fn add_job(&mut self, response: oneshot::Sender<Uuid>) {
         let job = Job::new(self.workers.clone());
         let job_id = job.id();
         self.jobs.insert(job_id, job);
 
-        if response.send(Ok(job_id)).is_err() {
+        if response.send(job_id).is_err() {
             warn!("failed to set response");
         }
     }
@@ -51,14 +47,11 @@ impl InMemoryState {
     pub fn get_weights(
         &mut self,
         job_id: Uuid,
-        response: oneshot::Sender<Result<HashMap<String, Tensor>, anyhow::Error>>,
+        response: oneshot::Sender<Result<HashMap<String, Tensor>, Error>>,
     ) {
         if let Some(job) = self.jobs.get_mut(&job_id) {
             job.get_weights(response);
-        } else if response
-            .send(Err(anyhow::anyhow!("job {job_id} not found")))
-            .is_err()
-        {
+        } else if response.send(Err(Error::UnknownJob(job_id))).is_err() {
             warn!("failed to set response");
         }
     }
@@ -67,14 +60,11 @@ impl InMemoryState {
         &mut self,
         job_id: Uuid,
         weights: &HashMap<String, Tensor>,
-        response: oneshot::Sender<Result<Vec<HashMap<String, Tensor>>, anyhow::Error>>,
+        response: oneshot::Sender<Result<Vec<HashMap<String, Tensor>>, Error>>,
     ) {
         if let Some(job) = self.jobs.get_mut(&job_id) {
             job.fit_round(weights, response);
-        } else if response
-            .send(Err(anyhow::anyhow!("job {job_id} not found")))
-            .is_err()
-        {
+        } else if response.send(Err(Error::UnknownJob(job_id))).is_err() {
             warn!("failed to set response");
         }
     }
@@ -84,14 +74,11 @@ impl InMemoryState {
         job_id: Uuid,
         addr: SocketAddr,
         weight: HashMap<String, Tensor>,
-        response: oneshot::Sender<Result<(), anyhow::Error>>,
+        response: oneshot::Sender<Result<(), Error>>,
     ) {
         if let Some(job) = self.jobs.get_mut(&job_id) {
             job.set_result(addr, weight, response);
-        } else if response
-            .send(Err(anyhow::anyhow!("job {job_id} not found")))
-            .is_err()
-        {
+        } else if response.send(Err(Error::UnknownJob(job_id))).is_err() {
             warn!("failed to set response");
         }
     }

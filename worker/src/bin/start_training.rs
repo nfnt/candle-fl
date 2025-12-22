@@ -26,10 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect()
         .await?;
 
-    info!(
-        uri = uri.to_string(),
-        "connected to coordinator, sending training request"
-    );
+    info!(%uri, "connected to coordinator, sending training request");
 
     let _response = CommandClient::new(channel.clone())
         .train(TrainRequest {
@@ -37,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
 
-    info!(uri = uri.to_string(), "training completed");
+    info!(%uri, "training completed");
 
     Ok(())
 }

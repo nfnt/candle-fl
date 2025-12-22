@@ -1,21 +1,17 @@
 use std::net::SocketAddr;
 
 use tokio::sync::mpsc;
-use tonic::Status;
 
 use crate::candlefl::CoordinatorMessage;
 
 #[derive(Clone)]
 pub struct Worker {
     addr: SocketAddr,
-    sender: mpsc::Sender<Result<CoordinatorMessage, Status>>,
+    sender: mpsc::Sender<CoordinatorMessage>,
 }
 
 impl Worker {
-    pub const fn new(
-        addr: SocketAddr,
-        sender: mpsc::Sender<Result<CoordinatorMessage, Status>>,
-    ) -> Self {
+    pub const fn new(addr: SocketAddr, sender: mpsc::Sender<CoordinatorMessage>) -> Self {
         Self { addr, sender }
     }
 
@@ -23,7 +19,7 @@ impl Worker {
         self.addr
     }
 
-    pub const fn sender(&self) -> &mpsc::Sender<Result<CoordinatorMessage, Status>> {
+    pub const fn sender(&self) -> &mpsc::Sender<CoordinatorMessage> {
         &self.sender
     }
 }

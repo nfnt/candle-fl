@@ -2,13 +2,12 @@ use std::{collections::HashMap, net::SocketAddr};
 
 use candle_core::Tensor;
 use tokio::{sync::oneshot, task};
-use tonic::Status;
 use tracing::{debug, warn};
 use uuid::Uuid;
 
 use crate::{
     candlefl::{CoordinatorMessage, FitRequest, WeightsRequest, coordinator_message},
-    state::worker::Worker,
+    state::{Error, worker::Worker},
 };
 
 pub struct Job {
@@ -34,7 +33,7 @@ impl Job {
 
     pub fn get_weights(
         &mut self,
-        response: oneshot::Sender<Result<HashMap<String, Tensor>, anyhow::Error>>,
+        response: oneshot::Sender<Result<HashMap<String, Tensor>, Error>>,
     ) {
         let job_id = self.id;
 
@@ -63,11 +62,7 @@ impl Job {
                         "sending WeightsRequest"
                     );
 
-                    if let Err(e) = worker
-                        .sender()
-                        .send(Result::<_, Status>::Ok(message.clone()))
-                        .await
-                    {
+                    if let Err(e) = worker.sender().send(message).await {
                         warn!(
                             job_id = %job_id,
                             addr = %worker.addr(),
@@ -76,26 +71,39 @@ impl Job {
                         );
                     }
 
-                    let weights = receiver.await.map_err(|e| anyhow::anyhow!(e));
+                    let weights = receiver.await.map_err(Error::Receive);
                     if response.send(weights).is_err() {
                         warn!("failed to set response");
                     }
                 })
             })
-            .unwrap();
+            .expect("at least one worker");
     }
 
     pub fn fit_round(
         &mut self,
         weights: &HashMap<String, Tensor>,
-        response: oneshot::Sender<Result<Vec<HashMap<String, Tensor>>, anyhow::Error>>,
+        response: oneshot::Sender<Result<Vec<HashMap<String, Tensor>>, Error>>,
     ) {
         let job_id = self.id;
+
+        let weights = match serialize(weights) {
+            Ok(weights) => weights,
+            Err(e) => {
+                if response
+                    .send(Err(Error::Candle(candle_core::Error::SafeTensor(e))))
+                    .is_err()
+                {
+                    warn!("failed to set response");
+                }
+                return;
+            }
+        };
 
         let message = CoordinatorMessage {
             message: Some(coordinator_message::Message::FitRequest(FitRequest {
                 job_id: job_id.into(),
-                weights: serialize(weights).unwrap(),
+                weights,
             })),
         };
 
@@ -115,7 +123,7 @@ impl Job {
                     "sending FitRequest"
                 );
 
-                if let Err(e) = worker.sender().send(Result::<_, Status>::Ok(message)).await {
+                if let Err(e) = worker.sender().send(message).await {
                     warn!(
                         job_id = %job_id,
                         addr = %worker.addr(),
@@ -134,7 +142,7 @@ impl Job {
                 .await
                 .into_iter()
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| anyhow::anyhow!(e));
+                .map_err(Error::Receive);
 
             if response.send(results).is_err() {
                 warn!("failed to set response");
@@ -146,23 +154,16 @@ impl Job {
         &mut self,
         addr: SocketAddr,
         weights: HashMap<String, Tensor>,
-        response: oneshot::Sender<Result<(), anyhow::Error>>,
+        response: oneshot::Sender<Result<(), Error>>,
     ) {
         if let Some(sender) = self.tasks.remove(&addr) {
             if response
-                .send(
-                    sender
-                        .send(weights)
-                        .map_err(|_| anyhow::anyhow!("failed to set result for {addr}")),
-                )
+                .send(sender.send(weights).map_err(|_| Error::ResultNotSet(addr)))
                 .is_err()
             {
                 warn!("failed to set response");
             }
-        } else if response
-            .send(Err(anyhow::anyhow!("completer not found for {addr}")))
-            .is_err()
-        {
+        } else if response.send(Err(Error::UnknownCompleter(addr))).is_err() {
             warn!("failed to set response");
         }
     }
