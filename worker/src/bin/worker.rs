@@ -39,6 +39,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(%uri, "connected to coordinator");
 
+    let dev = if candle_core::utils::cuda_is_available() {
+        Device::new_cuda(0)?
+    } else if candle_core::utils::metal_is_available() {
+        Device::new_metal(0)?
+    } else {
+        Device::Cpu
+    };
+
     // In production code we need to handle stream disconnections by retrying
     // if a connection is dropped. This isn't done here.
     while let Some(message) = stream.message().await? {
@@ -108,56 +116,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                     let channel = channel.clone();
 
-                    task::spawn(async move {
-                        // This is a blocking operation, so we'll offload it
-                        let result = task::spawn_blocking(move || {
-                            let dev = Device::Cpu;
-                            let data = prepare_data(&dev)?;
+                    task::spawn({
+                        let dev = dev.clone();
+                        async move {
+                            // This is a blocking operation, so we'll offload it
+                            let result = task::spawn_blocking(move || {
+                                let data = prepare_data(&dev)?;
 
-                            train(&deserialize(&fit_request.weights)?, &data, &dev)
-                        })
-                        .await
-                        .expect("task doesn't panic");
-
-                        let result = match result {
-                            Ok(result) => result,
-                            Err(e) => {
-                                debug!(
-                                    job_id = fit_request.job_id,
-                                    "failed to prepare model: {}", e
-                                );
-                                return;
-                            }
-                        };
-
-                        let weights = match serialize(&result) {
-                            Ok(weights) => weights,
-                            Err(e) => {
-                                debug!(
-                                    job_id = fit_request.job_id,
-                                    "failed to serialize weights: {}", e
-                                );
-                                return;
-                            }
-                        };
-
-                        match PublisherClient::new(channel)
-                            .publish(WorkerMessage {
-                                message: Some(worker_message::Message::FitResponse(FitResponse {
-                                    job_id: fit_request.job_id.clone(),
-                                    weights,
-                                })),
+                                train(&deserialize(&fit_request.weights)?, &data, &dev)
                             })
                             .await
-                        {
-                            Ok(_) => {
-                                debug!(job_id = fit_request.job_id, "sent FitResponse");
-                            }
-                            Err(status) => {
-                                debug!(
-                                    job_id = fit_request.job_id,
-                                    "failed to send FitResponse: {}", status
-                                );
+                            .expect("task doesn't panic");
+
+                            let result = match result {
+                                Ok(result) => result,
+                                Err(e) => {
+                                    debug!(
+                                        job_id = fit_request.job_id,
+                                        "failed to prepare model: {}", e
+                                    );
+                                    return;
+                                }
+                            };
+
+                            let weights = match serialize(&result) {
+                                Ok(weights) => weights,
+                                Err(e) => {
+                                    debug!(
+                                        job_id = fit_request.job_id,
+                                        "failed to serialize weights: {}", e
+                                    );
+                                    return;
+                                }
+                            };
+
+                            match PublisherClient::new(channel)
+                                .publish(WorkerMessage {
+                                    message: Some(worker_message::Message::FitResponse(
+                                        FitResponse {
+                                            job_id: fit_request.job_id.clone(),
+                                            weights,
+                                        },
+                                    )),
+                                })
+                                .await
+                            {
+                                Ok(_) => {
+                                    debug!(job_id = fit_request.job_id, "sent FitResponse");
+                                }
+                                Err(status) => {
+                                    debug!(
+                                        job_id = fit_request.job_id,
+                                        "failed to send FitResponse: {}", status
+                                    );
+                                }
                             }
                         }
                     });
