@@ -49,9 +49,9 @@ fn average_weights(
                 .into_iter()
                 .try_fold(result, |mut result, (name, tensor)| {
                     if let Some(existing) = result.get(&name) {
-                        result.insert(name.to_string(), (existing + tensor)?);
+                        result.insert(name, (existing + tensor)?);
                     } else {
-                        result.insert(name.to_string(), tensor);
+                        result.insert(name, tensor);
                     }
 
                     Ok::<_, candle_core::Error>(result)

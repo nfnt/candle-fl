@@ -1,10 +1,10 @@
 use candle_core::{D, DType, Device, Error, safetensors::Load};
-use candle_nn::{Optimizer, SGD, VarBuilder, VarMap, loss, ops};
+use candle_nn::{AdamW, Module, Optimizer, ParamsAdamW, VarBuilder, VarMap, loss, ops};
 use safetensors::SafeTensors;
 use tracing::info;
 
 use crate::ml::dataloader::Dataloader;
-use crate::ml::model::Model;
+use crate::ml::model::LeNet;
 
 mod dataloader;
 mod model;
@@ -13,17 +13,17 @@ pub fn prepare_data(dev: &Device) -> Result<Dataloader, Error> {
     let dataset = candle_datasets::vision::mnist::load()?;
 
     let inputs = dataset.train_images.to_device(dev)?;
-    let targets = dataset.train_labels.to_device(dev)?;
+    let targets = dataset.train_labels.to_dtype(DType::U32)?.to_device(dev)?;
 
-    Ok(Dataloader::new(inputs, targets, 32))
+    Ok(Dataloader::new(inputs, targets, 64))
 }
 
-pub fn prepare_model(dev: &Device) -> Result<(VarMap, Model), Error> {
+pub fn prepare_model(dev: &Device) -> Result<(VarMap, LeNet), Error> {
     let varmap = VarMap::new();
     let vs = VarBuilder::from_varmap(&varmap, DType::F32, dev);
 
     // Creating the model builds 'varmap' parameters
-    let model = Model::try_new(&vs)?;
+    let model = LeNet::try_new(vs)?;
 
     Ok((varmap, model))
 }
@@ -42,7 +42,13 @@ pub fn train(weights: &SafeTensors, data: &Dataloader, dev: &Device) -> Result<V
         }
     }
 
-    let mut optimizer = SGD::new(varmap.all_vars(), 0.1)?;
+    let mut optimizer = AdamW::new(
+        varmap.all_vars(),
+        ParamsAdamW {
+            lr: 0.001,
+            ..Default::default()
+        },
+    )?;
 
     let mut sum_loss = 0f32;
     let mut total = 0;

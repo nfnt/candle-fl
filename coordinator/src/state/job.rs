@@ -87,7 +87,7 @@ impl Job {
     ) {
         let job_id = self.id;
 
-        let weights = match serialize(weights) {
+        let weights = match safetensors::serialize(weights, &None) {
             Ok(weights) => weights,
             Err(e) => {
                 if response
@@ -167,8 +167,4 @@ impl Job {
             warn!("failed to set response");
         }
     }
-}
-
-fn serialize(weights: &HashMap<String, Tensor>) -> Result<Vec<u8>, safetensors::SafeTensorError> {
-    safetensors::serialize(weights, &None)
 }
