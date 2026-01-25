@@ -31,7 +31,7 @@ impl Command for CommandService {
             .await
             .map_err(|e| Status::internal(format!("failed to train model: {e}")))?;
 
-        let serialized_weights = safetensors::serialize(weights, &None)
+        let serialized_weights = safetensors::serialize(weights, None)
             .map_err(|e| Status::internal(format!("invalid weights: {e}")))?;
 
         Ok(Response::new(TrainResponse {

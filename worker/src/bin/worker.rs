@@ -186,7 +186,7 @@ fn serialize(varmap: &VarMap) -> Result<Vec<u8>, Box<dyn std::error::Error + '_>
 
     let data = tensor_data.iter().map(|(k, v)| (k, v.as_tensor()));
 
-    Ok(safetensors::serialize(data, &None)?)
+    Ok(safetensors::serialize(data, None)?)
 }
 
 fn deserialize(data: &[u8]) -> Result<SafeTensors<'_>, SafeTensorError> {

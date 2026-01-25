@@ -87,7 +87,7 @@ impl Job {
     ) {
         let job_id = self.id;
 
-        let weights = match safetensors::serialize(weights, &None) {
+        let weights = match safetensors::serialize(weights, None) {
             Ok(weights) => weights,
             Err(e) => {
                 if response
