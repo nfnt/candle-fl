@@ -10,7 +10,7 @@ edition.workspace = true
 default = []
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
 cuda = ["candle-core/cuda", "candle-nn/cuda"]
-cudnn = ["candle-core/cudnn", "candle-nn/cudnn"]
+cudnn = ["candle-core/cudnn", "candle-nn/cudnn", "candle-nn/cuda"]
 mkl = ["candle-core/mkl", "candle-nn/mkl"]
 metal = ["candle-core/metal", "candle-nn/metal"]
 
