@@ -9,7 +9,7 @@ Multiple workers connect to a coordinator, which orchestrates them to train a
 model on their local data. The focus of this code is on the distributed system
 needed for federated learning, not on the machine learning model. As such, the
 model is the classic [LeNet](https://ieeexplore.ieee.org/document/726791) CNN and each worker trains on the same
-MNIST dataset.
+[FashionMNIST](https://github.com/zalandoresearch/fashion-mnist) dataset.
 
 ## Architecture
 

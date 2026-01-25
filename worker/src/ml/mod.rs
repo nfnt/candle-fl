@@ -10,7 +10,7 @@ mod dataloader;
 mod model;
 
 pub fn prepare_data(dev: &Device) -> Result<Dataloader, Error> {
-    let dataset = candle_datasets::vision::mnist::load()?;
+    let dataset = candle_datasets::vision::fashion_mnist::load()?;
 
     let inputs = dataset.train_images.to_device(dev)?;
     let targets = dataset.train_labels.to_dtype(DType::U32)?.to_device(dev)?;
