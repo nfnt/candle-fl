@@ -15,7 +15,7 @@ pub struct Job {
     workers: Vec<Worker>,
     // Tasks wait for responses from workers.
     // They are removed once the response is received in 'set_result'.
-    tasks: HashMap<SocketAddr, Box<oneshot::Sender<HashMap<String, Tensor>>>>,
+    tasks: HashMap<SocketAddr, oneshot::Sender<HashMap<String, Tensor>>>,
 }
 
 impl Job {
@@ -37,6 +37,13 @@ impl Job {
     ) {
         let job_id = self.id;
 
+        let Some(worker) = self.workers.first().cloned() else {
+            if response.send(Err(Error::NoWorkers(job_id))).is_err() {
+                warn!("failed to set response");
+            }
+            return;
+        };
+
         let message = CoordinatorMessage {
             message: Some(coordinator_message::Message::WeightsRequest(
                 WeightsRequest {
@@ -45,39 +52,30 @@ impl Job {
             )),
         };
 
-        let _task = self
-            .workers
-            .first()
-            .map(|worker| {
-                let worker = worker.clone();
-                let message = message.clone();
+        let (sender, receiver) = oneshot::channel();
+        self.tasks.insert(worker.addr(), sender);
 
-                let (sender, receiver) = oneshot::channel();
-                self.tasks.insert(worker.addr(), Box::new(sender));
+        task::spawn(async move {
+            debug!(
+                job_id = %job_id,
+                addr = %worker.addr(),
+                "sending WeightsRequest"
+            );
 
-                task::spawn(async move {
-                    debug!(
-                        job_id = %job_id,
-                        addr = %worker.addr(),
-                        "sending WeightsRequest"
-                    );
+            if let Err(e) = worker.sender().send(message).await {
+                warn!(
+                    job_id = %job_id,
+                    addr = %worker.addr(),
+                    error = %e,
+                    "failed to send WeightsRequest"
+                );
+            }
 
-                    if let Err(e) = worker.sender().send(message).await {
-                        warn!(
-                            job_id = %job_id,
-                            addr = %worker.addr(),
-                            error = %e,
-                            "failed to send WeightsRequest"
-                        );
-                    }
-
-                    let weights = receiver.await.map_err(Error::Receive);
-                    if response.send(weights).is_err() {
-                        warn!("failed to set response");
-                    }
-                })
-            })
-            .expect("at least one worker");
+            let weights = receiver.await.map_err(Error::Receive);
+            if response.send(weights).is_err() {
+                warn!("failed to set response");
+            }
+        });
     }
 
     pub fn fit_round(
@@ -114,7 +112,7 @@ impl Job {
             let message = message.clone();
 
             let (sender, receiver) = oneshot::channel();
-            self.tasks.insert(worker.addr(), Box::new(sender));
+            self.tasks.insert(worker.addr(), sender);
 
             join_set.spawn(async move {
                 debug!(

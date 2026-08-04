@@ -40,28 +40,25 @@ impl FedAvg {
 fn average_weights(
     tensors: Vec<HashMap<String, Tensor>>,
 ) -> Result<HashMap<String, Tensor>, Error> {
-    let num_tensors = tensors.len() as f64;
+    // Sum tensors per key, tracking how many responses actually contributed
+    // that key so keys missing from some workers are still averaged correctly.
+    let mut sums: HashMap<String, (Tensor, usize)> = HashMap::new();
 
-    Ok(tensors
-        .into_iter()
-        .try_fold(HashMap::new(), |result, tensor| {
-            tensor
-                .into_iter()
-                .try_fold(result, |mut result, (name, tensor)| {
-                    if let Some(existing) = result.get(&name) {
-                        result.insert(name, (existing + tensor)?);
-                    } else {
-                        result.insert(name, tensor);
-                    }
+    for tensor_map in tensors {
+        for (name, tensor) in tensor_map {
+            match sums.remove(&name) {
+                Some((existing, count)) => sums.insert(name, ((existing + tensor)?, count + 1)),
+                None => sums.insert(name, (tensor, 1)),
+            };
+        }
+    }
 
-                    Ok::<_, candle_core::Error>(result)
-                })
-        })?
-        .into_iter()
-        .map(|(name, tensor)| (num_tensors.recip() * tensor).map(|t| (name, t)))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .collect())
+    let mut result = HashMap::with_capacity(sums.len());
+    for (name, (tensor, count)) in sums {
+        result.insert(name, ((count as f64).recip() * tensor)?);
+    }
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -129,6 +126,33 @@ mod tests {
         assert_eq!(
             result.get("b").unwrap().to_vec2::<f64>().unwrap(),
             vec![vec![1.5, 1.5], vec![1.5, 1.5]],
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_average_weights_missing_key() -> Result<(), candle_core::Error> {
+        let dev = Device::Cpu;
+
+        let mut map1 = HashMap::new();
+        map1.insert("a".to_string(), Tensor::new(vec![2.0, 2.0], &dev).unwrap());
+        map1.insert("b".to_string(), Tensor::new(vec![4.0, 4.0], &dev).unwrap());
+
+        let mut map2 = HashMap::new();
+        map2.insert("a".to_string(), Tensor::new(vec![4.0, 4.0], &dev).unwrap());
+        // "b" is missing from this worker's response.
+
+        let result = average_weights(vec![map1, map2]).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert_eq!(
+            result.get("a").unwrap().to_vec1::<f64>().unwrap(),
+            vec![3.0, 3.0]
+        );
+        assert_eq!(
+            result.get("b").unwrap().to_vec1::<f64>().unwrap(),
+            vec![4.0, 4.0]
         );
 
         Ok(())

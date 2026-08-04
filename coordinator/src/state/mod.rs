@@ -21,6 +21,8 @@ mod worker;
 pub enum Error {
     #[error("unknown job \"{0}\"")]
     UnknownJob(Uuid),
+    #[error("job \"{0}\" has no connected workers")]
+    NoWorkers(Uuid),
     #[error("failed to set result for worker \"{0}\"")]
     ResultNotSet(SocketAddr),
     #[error("unknown completer for worker \"{0}\"")]

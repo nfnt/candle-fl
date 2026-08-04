@@ -56,15 +56,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     debug!(job_id = weights_request.job_id, "received WeightsRequest");
 
                     let channel = channel.clone();
+                    let dev = dev.clone();
 
                     task::spawn(async move {
                         // This is a blocking operation, so we'll offload it
-                        let result = task::spawn_blocking(move || {
-                            let dev = Device::Cpu;
-                            prepare_model(&dev).map(|(v, _)| v)
-                        })
-                        .await
-                        .expect("task doesn't panic");
+                        let result =
+                            task::spawn_blocking(move || prepare_model(&dev).map(|(v, _)| v))
+                                .await
+                                .expect("task doesn't panic");
 
                         let result = match result {
                             Ok(result) => result,
