@@ -15,6 +15,7 @@ pub struct SubscriberService {
 }
 
 impl SubscriberService {
+    #[must_use]
     pub const fn new(state: State) -> Self {
         Self { state }
     }
@@ -28,7 +29,9 @@ impl Subscriber for SubscriberService {
         &self,
         request: Request<()>,
     ) -> Result<Response<Self::SubscribeStream>, Status> {
-        let addr = request.remote_addr().expect("a remote address");
+        let addr = request
+            .remote_addr()
+            .ok_or_else(|| Status::internal("missing remote address"))?;
 
         info!(addr = addr.to_string(), "worker subscribing");
 

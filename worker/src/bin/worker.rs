@@ -1,16 +1,16 @@
-use candle_core::Device;
-use candle_nn::VarMap;
+use std::time::Duration;
+
 use clap::Parser;
-use safetensors::{SafeTensorError, SafeTensors};
 use tokio::task;
 use tonic::transport::{Channel, Uri};
 use tracing::{debug, info};
 use worker::{
     candlefl::{
-        self, FitResponse, WeightsResponse, WorkerMessage, publisher_client::PublisherClient,
-        subscriber_client::SubscriberClient, worker_message,
+        self, WorkerMessage, publisher_client::PublisherClient, subscriber_client::SubscriberClient,
     },
-    ml::{prepare_data, prepare_model, train},
+    handler::{handle_fit_request, handle_weights_request},
+    ml::FashionMnistTrainer,
+    select_device,
 };
 
 #[derive(Parser)]
@@ -30,6 +30,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let channel = Channel::builder(uri.clone())
         .user_agent(format!("candle-fl-worker/{}", env!("CARGO_PKG_VERSION")))?
+        // Matches the coordinator's 'http2_keepalive_interval'/'_timeout':
+        // ping a connection that's been idle (e.g. waiting for the next
+        // training round) so a half-open connection is detected and torn
+        // down rather than looking alive forever.
+        .http2_keep_alive_interval(Duration::from_secs(30))
+        .keep_alive_timeout(Duration::from_secs(20))
+        .keep_alive_while_idle(true)
         .connect()
         .await?;
     let mut stream = SubscriberClient::new(channel.clone())
@@ -39,140 +46,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(%uri, "connected to coordinator");
 
-    let dev = if candle_core::utils::cuda_is_available() {
-        Device::new_cuda(0)?
-    } else if candle_core::utils::metal_is_available() {
-        Device::new_metal(0)?
-    } else {
-        Device::Cpu
-    };
+    let dev = select_device()?;
 
     // In production code we need to handle stream disconnections by retrying
     // if a connection is dropped. This isn't done here.
+    //
+    // Related, deliberately out-of-scope gap: a worker that's still
+    // connected but internally wedged (e.g. stuck in a training step) is
+    // indistinguishable to the coordinator from one that's just slow --
+    // there's no heartbeat in the protocol. See the doc comment on
+    // 'coordinator::state::job' for what disconnects the coordinator *does*
+    // detect, and why a fixed timeout isn't a safe substitute here.
     while let Some(message) = stream.message().await? {
-        if let Some(message) = message.message {
-            match message {
-                candlefl::coordinator_message::Message::WeightsRequest(weights_request) => {
-                    debug!(job_id = weights_request.job_id, "received WeightsRequest");
+        let Some(message) = message.message else {
+            continue;
+        };
 
-                    let channel = channel.clone();
-                    let dev = dev.clone();
+        match message {
+            candlefl::coordinator_message::Message::WeightsRequest(weights_request) => {
+                info!(job_id = weights_request.job_id, "received WeightsRequest");
 
-                    task::spawn(async move {
-                        // This is a blocking operation, so we'll offload it
-                        let result =
-                            task::spawn_blocking(move || prepare_model(&dev).map(|(v, _)| v))
-                                .await
-                                .expect("task doesn't panic");
+                let channel = channel.clone();
+                let dev = dev.clone();
+                let job_id = weights_request.job_id;
 
-                        let result = match result {
-                            Ok(result) => result,
-                            Err(e) => {
-                                debug!(
-                                    job_id = weights_request.job_id,
-                                    "failed to prepare model: {}", e
-                                );
-                                return;
-                            }
-                        };
+                task::spawn(async move {
+                    match handle_weights_request(FashionMnistTrainer, dev, job_id.clone()).await {
+                        Ok(message) => send(channel, message, &job_id, "WeightsResponse").await,
+                        Err(e) => debug!(job_id, "failed to prepare model: {}", e),
+                    }
+                });
+            }
+            candlefl::coordinator_message::Message::FitRequest(fit_request) => {
+                info!(job_id = fit_request.job_id, "received FitRequest");
 
-                        let weights = match serialize(&result) {
-                            Ok(weights) => weights,
-                            Err(e) => {
-                                debug!(
-                                    job_id = weights_request.job_id,
-                                    "failed to serialize weights: {}", e
-                                );
-                                return;
-                            }
-                        };
+                let channel = channel.clone();
+                let dev = dev.clone();
+                let job_id = fit_request.job_id;
+                let weights = fit_request.weights;
 
-                        match PublisherClient::new(channel)
-                            .publish(WorkerMessage {
-                                message: Some(worker_message::Message::WeightsResponse(
-                                    WeightsResponse {
-                                        job_id: weights_request.job_id.clone(),
-                                        weights,
-                                    },
-                                )),
-                            })
-                            .await
-                        {
-                            Ok(_) => {
-                                debug!(job_id = weights_request.job_id, "sent WeightsResponse");
-                            }
-                            Err(status) => {
-                                debug!(
-                                    job_id = weights_request.job_id,
-                                    "failed to send WeightsResponse: {}", status
-                                );
-                            }
-                        }
-                    });
-                }
-                candlefl::coordinator_message::Message::FitRequest(fit_request) => {
-                    debug!(job_id = fit_request.job_id, "received FitRequest");
-
-                    let channel = channel.clone();
-
-                    task::spawn({
-                        let dev = dev.clone();
-                        async move {
-                            // This is a blocking operation, so we'll offload it
-                            let result = task::spawn_blocking(move || {
-                                let data = prepare_data(&dev)?;
-
-                                train(&deserialize(&fit_request.weights)?, &data, &dev)
-                            })
-                            .await
-                            .expect("task doesn't panic");
-
-                            let result = match result {
-                                Ok(result) => result,
-                                Err(e) => {
-                                    debug!(
-                                        job_id = fit_request.job_id,
-                                        "failed to prepare model: {}", e
-                                    );
-                                    return;
-                                }
-                            };
-
-                            let weights = match serialize(&result) {
-                                Ok(weights) => weights,
-                                Err(e) => {
-                                    debug!(
-                                        job_id = fit_request.job_id,
-                                        "failed to serialize weights: {}", e
-                                    );
-                                    return;
-                                }
-                            };
-
-                            match PublisherClient::new(channel)
-                                .publish(WorkerMessage {
-                                    message: Some(worker_message::Message::FitResponse(
-                                        FitResponse {
-                                            job_id: fit_request.job_id.clone(),
-                                            weights,
-                                        },
-                                    )),
-                                })
-                                .await
-                            {
-                                Ok(_) => {
-                                    debug!(job_id = fit_request.job_id, "sent FitResponse");
-                                }
-                                Err(status) => {
-                                    debug!(
-                                        job_id = fit_request.job_id,
-                                        "failed to send FitResponse: {}", status
-                                    );
-                                }
-                            }
-                        }
-                    });
-                }
+                task::spawn(async move {
+                    match handle_fit_request(FashionMnistTrainer, dev, job_id.clone(), weights)
+                        .await
+                    {
+                        Ok(message) => send(channel, message, &job_id, "FitResponse").await,
+                        Err(e) => debug!(job_id, "failed to train model: {}", e),
+                    }
+                });
             }
         }
     }
@@ -180,14 +100,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn serialize(varmap: &VarMap) -> Result<Vec<u8>, Box<dyn std::error::Error + '_>> {
-    let tensor_data = varmap.data().lock()?;
-
-    let data = tensor_data.iter().map(|(k, v)| (k, v.as_tensor()));
-
-    Ok(safetensors::serialize(data, None)?)
-}
-
-fn deserialize(data: &[u8]) -> Result<SafeTensors<'_>, SafeTensorError> {
-    safetensors::SafeTensors::deserialize(data)
+async fn send(channel: Channel, message: WorkerMessage, job_id: &str, kind: &str) {
+    match PublisherClient::new(channel).publish(message).await {
+        Ok(_) => info!(job_id, "sent {}", kind),
+        Err(status) => debug!(job_id, "failed to send {}: {}", kind, status),
+    }
 }

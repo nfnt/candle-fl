@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -13,8 +17,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/cache@v5
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/bin/
@@ -28,10 +32,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
       - name: cargo fmt
-        run: cargo fmt --check
+        run: cargo fmt --all --check
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
-      - name: cargo check
-        run: cargo check
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: cargo test
-        run: cargo test
+        run: cargo test --workspace --all-targets --locked
+      - name: cargo test --doc
+        # '--all-targets' above skips doc tests; run them separately.
+        run: cargo test --workspace --doc --locked
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # The action defaults to `--all-features`, which would pull in the
+          # optional `cuda`/`cudnn`/`mkl`/`metal`/`accelerate` worker
+          # features that deny.toml's allow-list deliberately excludes (see
+          # deny.toml for why). Check the same default-feature graph as the
+          # rest of this workflow instead.
+          arguments: ""

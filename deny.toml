@@ -1,0 +1,51 @@
+# cargo-deny configuration. Run locally with `cargo deny check` (requires
+# `cargo install cargo-deny`); CI runs it via EmbarkStudios/cargo-deny-action.
+#
+# The allow-list below was derived from the actual dependency tree
+# (`cargo metadata --format-version=1 | jq -r '.packages[].license'`, deduped)
+# under default features. It deliberately excludes the optional
+# `cuda`/`cudnn`/`mkl`/`metal`/`accelerate` worker features -- see the CI
+# workflow and README for why those aren't built in CI at all.
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # 'paste' is unmaintained (archived by its author, no replacement
+    # planned). It's a transitive compile-time proc-macro dependency via
+    # candle-core -> gemm, several levels below anything this project
+    # controls; it isn't linked into the built binaries. There is no safe
+    # upgrade -- re-evaluate when candle-core drops the dependency.
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
