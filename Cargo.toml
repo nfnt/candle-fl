@@ -9,6 +9,9 @@ authors = ["Jan Schlicht <jan@jschlicht.dev>"]
 publish = false
 edition = "2024"
 
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
 [profile.release]
 lto = true
 strip = true

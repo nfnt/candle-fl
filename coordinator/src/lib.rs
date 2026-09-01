@@ -3,4 +3,4 @@ pub mod candlefl {
 }
 pub mod service;
 pub mod state;
-mod strategy;
+pub mod strategy;

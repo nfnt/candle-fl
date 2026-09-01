@@ -15,6 +15,7 @@ pub struct PublisherService {
 }
 
 impl PublisherService {
+    #[must_use]
     pub const fn new(state: State) -> Self {
         Self { state }
     }
@@ -23,7 +24,9 @@ impl PublisherService {
 #[tonic::async_trait]
 impl Publisher for PublisherService {
     async fn publish(&self, request: Request<WorkerMessage>) -> Result<Response<()>, Status> {
-        let addr = request.remote_addr().expect("a remote address");
+        let addr = request
+            .remote_addr()
+            .ok_or_else(|| Status::internal("missing remote address"))?;
 
         if let Some(message) = request.into_inner().message {
             match message {
@@ -79,4 +82,121 @@ impl Publisher for PublisherService {
 
 fn deserialize(data: &[u8]) -> Result<HashMap<String, Tensor>, candle_core::Error> {
     load_buffer(data, &Device::Cpu)
+}
+
+#[cfg(test)]
+mod tests {
+    use tonic::transport::server::TcpConnectInfo;
+
+    use super::*;
+    use crate::candlefl::{FitResponse, WeightsResponse};
+
+    fn tensor_map(value: f64) -> HashMap<String, Tensor> {
+        let mut map = HashMap::new();
+        map.insert(
+            "a".to_string(),
+            Tensor::new(vec![value, value], &Device::Cpu).unwrap(),
+        );
+        map
+    }
+
+    fn with_remote_addr<T>(message: T, addr: &str) -> Request<T> {
+        let mut request = Request::new(message);
+        request.extensions_mut().insert(TcpConnectInfo {
+            local_addr: None,
+            remote_addr: Some(addr.parse().unwrap()),
+        });
+        request
+    }
+
+    #[test]
+    fn deserialize_round_trips_with_serialize() {
+        let weights = tensor_map(1.0);
+        let bytes = safetensors::serialize(&weights, None).unwrap();
+
+        let result = deserialize(&bytes).unwrap();
+
+        assert_eq!(
+            result.get("a").unwrap().to_vec1::<f64>().unwrap(),
+            vec![1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn deserialize_rejects_malformed_buffer() {
+        let err = deserialize(b"not a safetensors buffer").unwrap_err();
+
+        assert!(matches!(err, candle_core::Error::SafeTensor(_)));
+    }
+
+    #[tokio::test]
+    async fn publish_missing_remote_addr_errors_instead_of_panicking() {
+        let service = PublisherService::new(State::new());
+        let request = Request::new(WorkerMessage {
+            message: Some(worker_message::Message::WeightsResponse(WeightsResponse {
+                job_id: Uuid::new_v4().to_string(),
+                weights: vec![],
+            })),
+        });
+
+        let status = service.publish(request).await.unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+    }
+
+    #[tokio::test]
+    async fn publish_invalid_job_id_is_invalid_argument() {
+        let service = PublisherService::new(State::new());
+        let request = with_remote_addr(
+            WorkerMessage {
+                message: Some(worker_message::Message::FitResponse(FitResponse {
+                    job_id: "not-a-uuid".to_string(),
+                    weights: vec![],
+                })),
+            },
+            "127.0.0.1:1",
+        );
+
+        let status = service.publish(request).await.unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn publish_invalid_weights_is_invalid_argument() {
+        let service = PublisherService::new(State::new());
+        let request = with_remote_addr(
+            WorkerMessage {
+                message: Some(worker_message::Message::WeightsResponse(WeightsResponse {
+                    job_id: Uuid::new_v4().to_string(),
+                    weights: b"not safetensors".to_vec(),
+                })),
+            },
+            "127.0.0.1:1",
+        );
+
+        let status = service.publish(request).await.unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn publish_unknown_job_surfaces_as_status() {
+        // The job ID parses fine but was never created, exercising the
+        // 'set_fit_result' -> 'Status::from_error' path.
+        let service = PublisherService::new(State::new());
+        let request = with_remote_addr(
+            WorkerMessage {
+                message: Some(worker_message::Message::FitResponse(FitResponse {
+                    job_id: Uuid::new_v4().to_string(),
+                    weights: safetensors::serialize(&tensor_map(1.0), None).unwrap(),
+                })),
+            },
+            "127.0.0.1:1",
+        );
+
+        let status = service.publish(request).await.unwrap_err();
+
+        assert!(status.message().contains("unknown job"));
+    }
 }

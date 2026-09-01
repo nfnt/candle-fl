@@ -8,7 +8,8 @@ horizontal federated learning with data provided by workers.
 Multiple workers connect to a coordinator, which orchestrates them to train a
 model on their local data. The focus of this code is on the distributed system
 needed for federated learning, not on the machine learning model. As such, the
-model is the classic [LeNet](https://ieeexplore.ieee.org/document/726791) CNN and each worker trains on the same
+model is the classic [LeNet](https://ieeexplore.ieee.org/document/726791) CNN
+and each worker trains on the same
 [FashionMNIST](https://github.com/zalandoresearch/fashion-mnist) dataset.
 
 ## Architecture
@@ -44,3 +45,38 @@ $ cargo run -r --bin worker &
 $ cargo run -r --bin worker &
 $ cargo run -r --bin start_training 10
 ```
+
+The coordinator waits indefinitely for a still-connected worker to respond
+by default -- round durations vary too widely (CPU vs. GPU, dataset size)
+for a safe default deadline. Pass `--worker-deadline-secs <N>` to the
+coordinator to opt into a hard per-request cap instead; disconnected
+workers are detected and don't hang a round regardless of this setting.
+
+## Development
+
+Ensure that you have `protoc` installed and in `$PATH` (needed by both crates'
+`build.rs` to compile the protos in `api/proto/`).
+
+```shell
+$ cargo fmt --all --check                               # formatting
+$ cargo clippy --workspace --all-targets -- -D warnings # lints
+$ cargo test --workspace --all-targets                  # unit + integration tests
+$ cargo test --workspace --doc                          # doc tests
+```
+
+The worker's `cuda`/`cudnn`/`mkl`/`metal`/`accelerate` features are
+compile-checked locally (`cargo check -p worker --features <name>`) but not
+in CI, which runs on a plain Ubuntu runner without GPU toolchains.
+
+### Known limitations
+
+- A worker that's still connected but internally wedged (e.g. stuck
+  mid-epoch) is indistinguishable from one that's simply still training.
+  See the module doc on `coordinator::state::job` for what the coordinator
+  *does* detect (disconnects, half-open connections) and why a fixed timeout
+  isn't used as a substitute.
+- `coordinator::state::job::Job::set_result` documents a narrow residual
+  race: a worker's response arriving right as the coordinator moves on to
+  the next round can, in rare timing, resolve the wrong round. Closing
+  that gap needs a round/request token in the protocol, not more
+  bookkeeping.
