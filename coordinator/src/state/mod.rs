@@ -49,6 +49,18 @@ pub struct Job<'a> {
     state: &'a State,
 }
 
+impl<'a> Job<'a> {
+    /// A handle for `job_id` without registering it, so tests elsewhere in
+    /// the crate can check whether the actor still tracks a job -- e.g.
+    /// that cleanup after a run actually removed it -- via `get_weights`'s
+    /// `Error::UnknownJob` (removed/never added) vs. `Error::NoWorkers`
+    /// (still tracked, just with no workers).
+    #[cfg(test)]
+    pub(crate) const fn probe(state: &'a State, job_id: Uuid) -> Self {
+        Self { job_id, state }
+    }
+}
+
 impl Job<'_> {
     #[must_use]
     pub const fn id(&self) -> Uuid {
@@ -160,7 +172,7 @@ impl Job<'_> {
 /// let addr = "127.0.0.1:1".parse().unwrap();
 /// state.add_worker(addr, sender).await;
 ///
-/// let job = state.add_job().await;
+/// let job = state.add_job(uuid::Uuid::new_v4()).await;
 ///
 /// // Answer the coordinator's request for this worker's initial weights.
 /// let responder = {
@@ -229,19 +241,20 @@ impl State {
         receiver.await.expect("a response from the handler task");
     }
 
-    /// Start a new job, snapshotting the currently connected workers.
+    /// Start a new job under `job_id`, snapshotting the currently connected
+    /// workers.
     ///
     /// # Panics
     ///
     /// Panics if the coordinator's actor task has stopped running.
-    pub async fn add_job(&self) -> Job<'_> {
+    pub async fn add_job(&self, job_id: Uuid) -> Job<'_> {
         let (response, receiver) = oneshot::channel();
         self.sender
-            .send(Command::AddJob { response })
+            .send(Command::AddJob { job_id, response })
             .await
             .expect("a running handler task");
 
-        let job_id = receiver.await.expect("a response from the handler task");
+        receiver.await.expect("a response from the handler task");
 
         Job {
             job_id,
@@ -294,7 +307,8 @@ enum Command {
         response: oneshot::Sender<()>,
     },
     AddJob {
-        response: oneshot::Sender<Uuid>,
+        job_id: Uuid,
+        response: oneshot::Sender<()>,
     },
     RemoveJob {
         job_id: Uuid,
@@ -358,10 +372,10 @@ async fn handler<S: Store>(
                 store.add_worker(Worker::new(addr, sender));
                 reply(response, ());
             }
-            Command::AddJob { response } => {
+            Command::AddJob { job_id, response } => {
                 store.prune_disconnected();
-                let job_id = store.insert_job(job::Job::new(store.workers()));
-                reply(response, job_id);
+                store.insert_job(job::Job::new(job_id, store.workers()));
+                reply(response, ());
             }
             Command::RemoveJob { job_id, response } => {
                 store.remove_job(job_id);
@@ -475,7 +489,7 @@ mod tests {
 
         // A job exists, but nothing is pending for this address (no worker
         // was ever asked to respond).
-        let job = state.add_job().await;
+        let job = state.add_job(Uuid::new_v4()).await;
 
         let err = state
             .set_fit_result(job.id(), addr, tensor_map(1.0))
@@ -488,7 +502,7 @@ mod tests {
     #[tokio::test]
     async fn remove_job_makes_it_unknown() {
         let state = State::new();
-        let job = state.add_job().await;
+        let job = state.add_job(Uuid::new_v4()).await;
 
         job.remove().await;
 
@@ -504,7 +518,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         state.add_worker(addr, sender).await;
 
-        let job = state.add_job().await;
+        let job = state.add_job(Uuid::new_v4()).await;
 
         let responder = tokio::spawn({
             let state = state.clone();
@@ -549,7 +563,7 @@ mod tests {
         let live_addr: SocketAddr = "127.0.0.1:2".parse().unwrap();
         state.add_worker(live_addr, live_sender).await;
 
-        let job = state.add_job().await;
+        let job = state.add_job(Uuid::new_v4()).await;
 
         // If the dead worker were still first in the snapshot,
         // 'get_weights' would target it and fail with

@@ -23,7 +23,6 @@ A coordinator manages the training process.
 It provides a publish-subscribe service for workers to connect to, send
 training requests, and receive training results. These results are then
 aggregated by the coordinator.
-It also provides a service to start a training run.
 
 ### Worker
 
@@ -63,10 +62,6 @@ $ cargo clippy --workspace --all-targets -- -D warnings # lints
 $ cargo test --workspace --all-targets                  # unit + integration tests
 $ cargo test --workspace --doc                          # doc tests
 ```
-
-The worker's `cuda`/`cudnn`/`mkl`/`metal`/`accelerate` features are
-compile-checked locally (`cargo check -p worker --features <name>`) but not
-in CI, which runs on a plain Ubuntu runner without GPU toolchains.
 
 ### Known limitations
 

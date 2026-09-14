@@ -1,32 +1,33 @@
 use std::collections::HashMap;
 
 use candle_core::Tensor;
+use tokio::sync::mpsc;
 use tracing::info;
 
 use crate::{
-    state::{Error as StateError, Job, State},
-    strategy::{Error, Strategy},
+    state::{Error as StateError, Job},
+    strategy::{Error, RoundUpdate, Strategy},
 };
 
 /// [FederatedAveraging](https://arxiv.org/abs/1602.05629)
-pub struct FedAvg {
-    state: State,
-}
+#[derive(Default)]
+pub struct FedAvg;
 
 impl FedAvg {
     #[must_use]
-    pub const fn new(state: State) -> Self {
-        Self { state }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
 impl Strategy for FedAvg {
-    /// Fit model weights using federated averaging by training on data provided
-    /// by connected workers.
+    /// Fit model weights using federated averaging by training on data
+    /// provided by connected workers, reporting each round's aggregate on
+    /// `updates` as it completes.
     ///
     /// # Examples
     ///
-    /// `num_rounds = 0` skips straight to returning the initial weights
+    /// `num_rounds = 0` skips straight to reporting the initial weights
     /// fetched from the first connected worker -- useful here to show the
     /// full flow without a fake worker also having to answer `FitRequest`s.
     ///
@@ -49,63 +50,103 @@ impl Strategy for FedAvg {
     /// let addr = "127.0.0.1:1".parse().unwrap();
     /// state.add_worker(addr, sender).await;
     ///
+    /// // In a real coordinator, 'Runner' creates and removes the job around
+    /// // a strategy's 'fit' call; here there's no 'Runner' involved, so the
+    /// // example does that itself.
+    /// let job = state.add_job(uuid::Uuid::new_v4()).await;
+    ///
     /// let responder = {
     ///     let state = state.clone();
+    ///     let job_id = job.id();
     ///     tokio::spawn(async move {
     ///         let message = receiver.recv().await.expect("a WeightsRequest");
-    ///         let job_id = match message.message {
-    ///             Some(coordinator_message::Message::WeightsRequest(req)) => {
-    ///                 req.job_id.parse().unwrap()
-    ///             }
-    ///             _ => unreachable!("only a WeightsRequest is sent for 0 rounds"),
-    ///         };
+    ///         assert!(matches!(
+    ///             message.message,
+    ///             Some(coordinator_message::Message::WeightsRequest(_))
+    ///         ));
     ///         let mut weights = HashMap::new();
     ///         weights.insert("a".to_string(), Tensor::new(vec![1.0, 1.0], &Device::Cpu)?);
     ///         state.set_fit_result(job_id, addr, weights).await
     ///     })
     /// };
     ///
-    /// let strategy = FedAvg::new(state);
-    /// let weights = strategy.fit(0).await?;
+    /// let strategy = FedAvg::new();
+    /// let (updates_tx, mut updates_rx) = mpsc::channel(4);
+    /// strategy.fit(&job, 0, updates_tx).await?;
     /// responder.await??;
     ///
-    /// assert_eq!(weights.get("a").unwrap().to_vec1::<f64>()?, vec![1.0, 1.0]);
+    /// let update = updates_rx.recv().await.expect("the round 0 update");
+    /// assert_eq!(update.round, 0);
+    /// assert_eq!(update.weights.get("a").unwrap().to_vec1::<f64>()?, vec![1.0, 1.0]);
+    ///
+    /// job.remove().await;
     /// # Ok(())
     /// # }
     /// ```
-    async fn fit(&self, num_rounds: usize) -> Result<HashMap<String, Tensor>, Error> {
-        let job = self.state.add_job().await;
-
-        info!(job_id = %job.id(), "starting job");
-
-        // Run the rounds in a helper so the job is removed from the
-        // coordinator's state on every exit path, including an early
-        // return from a failed round -- otherwise it leaks for the
-        // lifetime of the coordinator process.
-        let result = run_rounds(&job, num_rounds).await;
-
-        job.remove().await;
-
-        info!(job_id = %job.id(), "finished job");
-
-        Ok(result?)
+    async fn fit(
+        &self,
+        job: &Job<'_>,
+        num_rounds: usize,
+        updates: mpsc::Sender<RoundUpdate>,
+    ) -> Result<(), Error> {
+        Ok(run_rounds(job, num_rounds, updates).await?)
     }
+}
+
+/// Send `weights` for `round` on `updates`, logging (rather than erroring)
+/// if the receiver has hung up -- the caller (e.g. a disconnected gRPC
+/// client) is simply no longer listening, which is not itself a failure of
+/// the training run. Returns whether the update was actually delivered, so
+/// callers can stop early once nobody is listening.
+async fn send_update(
+    updates: &mpsc::Sender<RoundUpdate>,
+    job_id: uuid::Uuid,
+    round: u64,
+    weights: HashMap<String, Tensor>,
+) -> bool {
+    let delivered = updates
+        .send(RoundUpdate {
+            job_id,
+            round,
+            weights,
+        })
+        .await
+        .is_ok();
+
+    if !delivered {
+        info!(job_id = %job_id, round, "no one is listening for round updates anymore; stopping early");
+    }
+
+    delivered
 }
 
 async fn run_rounds(
     job: &Job<'_>,
     num_rounds: usize,
-) -> Result<HashMap<String, Tensor>, StateError> {
+    updates: mpsc::Sender<RoundUpdate>,
+) -> Result<(), StateError> {
     let mut weights = job.get_weights().await?;
+
+    if num_rounds == 0 {
+        send_update(&updates, job.id(), 0, weights).await;
+        return Ok(());
+    }
 
     for round in 0..num_rounds {
         info!(job_id = %job.id(), "starting round {}", round + 1);
         let local_weights = job.fit_round(weights.clone()).await?;
 
         weights = average_weights(local_weights)?;
+
+        // 'round' is a loop index over 'usize'; clamp rather than wrap on
+        // 32-bit targets where 'usize' is narrower than the wire type.
+        let round_number = u64::try_from(round + 1).unwrap_or(u64::MAX);
+        if !send_update(&updates, job.id(), round_number, weights.clone()).await {
+            break;
+        }
     }
 
-    Ok(weights)
+    Ok(())
 }
 
 fn average_weights(
@@ -148,7 +189,10 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::candlefl::{CoordinatorMessage, coordinator_message::Message};
+    use crate::{
+        candlefl::{CoordinatorMessage, coordinator_message::Message},
+        state::State,
+    };
 
     #[test]
     fn test_average_weights_trivial() {
@@ -336,41 +380,50 @@ mod tests {
     #[tokio::test]
     async fn fit_no_workers_errors() {
         let state = State::new();
-        let strategy = FedAvg::new(state);
+        let job = state.add_job(Uuid::new_v4()).await;
+        let strategy = FedAvg::new();
+        let (updates_tx, _updates_rx) = mpsc::channel(4);
 
-        let err = strategy.fit(1).await.unwrap_err();
+        let err = strategy.fit(&job, 1, updates_tx).await.unwrap_err();
 
         assert!(matches!(err, Error::State(StateError::NoWorkers(_))));
     }
 
     #[tokio::test]
-    async fn fit_zero_rounds_returns_initial_weights_unchanged() {
+    async fn fit_zero_rounds_reports_initial_weights_unchanged() {
         let state = State::new();
         let (sender, mut receiver) = mpsc::channel(4);
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         state.add_worker(addr, sender).await;
 
+        let job = state.add_job(Uuid::new_v4()).await;
+        let job_id = job.id();
+
         let responder_state = state.clone();
         let responder = tokio::spawn(async move {
             let message = receiver.recv().await.expect("a WeightsRequest");
-            let job_id = job_id_of(&message);
+            assert_eq!(job_id_of(&message), job_id);
             responder_state
                 .set_fit_result(job_id, addr, tensor_map(1.0))
                 .await
                 .unwrap();
         });
 
-        let strategy = FedAvg::new(state);
-        let weights = tokio::time::timeout(Duration::from_secs(5), strategy.fit(0))
+        let strategy = FedAvg::new();
+        let (updates_tx, mut updates_rx) = mpsc::channel(4);
+        tokio::time::timeout(Duration::from_secs(5), strategy.fit(&job, 0, updates_tx))
             .await
             .expect("must not hang")
             .unwrap();
         responder.await.unwrap();
 
+        let update = updates_rx.recv().await.expect("a round 0 update");
+        assert_eq!(update.round, 0);
         assert_eq!(
-            weights.get("a").unwrap().to_vec1::<f64>().unwrap(),
+            update.weights.get("a").unwrap().to_vec1::<f64>().unwrap(),
             vec![1.0, 1.0]
         );
+        assert!(updates_rx.recv().await.is_none(), "only one update");
     }
 
     #[tokio::test]
@@ -380,12 +433,15 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
         state.add_worker(addr, sender).await;
 
+        let job = state.add_job(Uuid::new_v4()).await;
+        let job_id = job.id();
+
         let responder_state = state.clone();
         let responder = tokio::spawn(async move {
             // 1 WeightsRequest + 2 FitRequests, one worker each time.
             for _ in 0..3 {
                 let message = receiver.recv().await.expect("a request");
-                let job_id = job_id_of(&message);
+                assert_eq!(job_id_of(&message), job_id);
                 responder_state
                     .set_fit_result(job_id, addr, tensor_map(2.0))
                     .await
@@ -393,17 +449,79 @@ mod tests {
             }
         });
 
-        let strategy = FedAvg::new(state);
-        let weights = tokio::time::timeout(Duration::from_secs(5), strategy.fit(2))
+        let strategy = FedAvg::new();
+        let (updates_tx, mut updates_rx) = mpsc::channel(4);
+        tokio::time::timeout(Duration::from_secs(5), strategy.fit(&job, 2, updates_tx))
             .await
             .expect("must not hang")
             .unwrap();
         responder.await.unwrap();
 
         // A single worker: averaging is the identity, each round.
+        let first = updates_rx.recv().await.expect("round 1 update");
+        assert_eq!(first.round, 1);
         assert_eq!(
-            weights.get("a").unwrap().to_vec1::<f64>().unwrap(),
+            first.weights.get("a").unwrap().to_vec1::<f64>().unwrap(),
             vec![2.0, 2.0]
         );
+
+        let second = updates_rx.recv().await.expect("round 2 update");
+        assert_eq!(second.round, 2);
+        assert_eq!(second.job_id, first.job_id);
+        assert_eq!(
+            second.weights.get("a").unwrap().to_vec1::<f64>().unwrap(),
+            vec![2.0, 2.0]
+        );
+
+        assert!(updates_rx.recv().await.is_none(), "only two updates");
+    }
+
+    #[tokio::test]
+    async fn fit_stops_early_once_the_receiver_is_dropped() {
+        let state = State::new();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        state.add_worker(addr, sender).await;
+
+        let job = state.add_job(Uuid::new_v4()).await;
+        let job_id = job.id();
+
+        let (updates_tx, updates_rx) = mpsc::channel(4);
+
+        let responder_state = state.clone();
+        let responder = tokio::spawn(async move {
+            // Answer the initial WeightsRequest, then drop the updates
+            // receiver *before* round 1's FitRequest is even answered, so
+            // by the time the strategy tries to send round 1's update the
+            // channel is deterministically already closed -- no race with
+            // the strategy's own send. If the strategy didn't stop early,
+            // it would go on to send a second FitRequest for round 2, which
+            // nothing here ever answers, and the test would time out
+            // instead of passing.
+            let message = receiver.recv().await.expect("a WeightsRequest");
+            assert_eq!(job_id_of(&message), job_id);
+            responder_state
+                .set_fit_result(job_id, addr, tensor_map(1.0))
+                .await
+                .unwrap();
+
+            drop(updates_rx);
+
+            let message = receiver.recv().await.expect("round 1's FitRequest");
+            assert_eq!(job_id_of(&message), job_id);
+            responder_state
+                .set_fit_result(job_id, addr, tensor_map(1.0))
+                .await
+                .unwrap();
+        });
+
+        let strategy = FedAvg::new();
+
+        // Ending early because nobody is listening is not itself a failure.
+        tokio::time::timeout(Duration::from_secs(5), strategy.fit(&job, 5, updates_tx))
+            .await
+            .expect("must not hang")
+            .unwrap();
+        responder.await.unwrap();
     }
 }

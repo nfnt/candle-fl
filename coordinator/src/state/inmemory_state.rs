@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn insert_job_mut_remove_job_round_trip() {
         let mut state = InMemoryState::new();
-        let job_id = state.insert_job(Job::new(vec![]));
+        let job_id = state.insert_job(Job::new(Uuid::new_v4(), vec![]));
 
         assert!(state.job_mut(job_id).is_some());
         assert!(state.job_mut(Uuid::new_v4()).is_none());
