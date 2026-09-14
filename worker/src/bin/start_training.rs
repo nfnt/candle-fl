@@ -1,4 +1,5 @@
 use clap::Parser;
+use tokio_stream::StreamExt;
 use tonic::transport::{Channel, Uri};
 use tracing::info;
 use worker::candlefl::{TrainRequest, command_client::CommandClient};
@@ -28,11 +29,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(%uri, "connected to coordinator, sending training request");
 
-    let _response = CommandClient::new(channel.clone())
+    let mut response_stream = CommandClient::new(channel.clone())
         .train(TrainRequest {
             rounds: args.rounds,
         })
-        .await?;
+        .await?
+        .into_inner();
+
+    while let Some(response) = response_stream.next().await {
+        let response = response?;
+
+        info!(
+            job_id = %response.job_id,
+            "training round {} completed", response.round
+        );
+    }
 
     info!(%uri, "training completed");
 

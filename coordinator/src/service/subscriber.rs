@@ -33,7 +33,7 @@ impl Subscriber for SubscriberService {
             .remote_addr()
             .ok_or_else(|| Status::internal("missing remote address"))?;
 
-        info!(addr = addr.to_string(), "worker subscribing");
+        info!(%addr, "worker subscribing");
 
         let (sender, receiver) = mpsc::channel(32);
 

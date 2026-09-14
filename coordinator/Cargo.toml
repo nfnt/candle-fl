@@ -9,6 +9,7 @@ edition.workspace = true
 [dependencies]
 candle-core = { version = "0.11.0" }
 clap = { version = "4.5.4", features = ["derive"] }
+futures-util = { version = "0.3.34" }
 prost = { version = "0.14.1" }
 safetensors = { version = "0.8.0" }
 thiserror = { version = "2.0.17" }
@@ -26,8 +27,6 @@ tonic-prost-build = { version = "0.14.2" }
 
 [dev-dependencies]
 tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
-tokio-stream = { version = "0.1.15" }
-tonic = { version = "0.14.2", features = ["transport"] }
 
 [lints]
 workspace = true

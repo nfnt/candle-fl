@@ -41,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = State::with_deadline(deadline);
 
-    let command_service = CommandService::new(FedAvg::new(state.clone()));
+    let command_service = CommandService::new(FedAvg::new(), state.clone());
     let publisher_service = PublisherService::new(state.clone());
     let subscriber_service = SubscriberService::new(state.clone());
 
@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_serving::<SubscriberServer<SubscriberService>>()
         .await;
 
-    info!(addr = %addr, "coordinator started");
+    info!(%addr, "coordinator started");
 
     Server::builder()
         // Ping idle connections so a half-open one (frozen host, dropped

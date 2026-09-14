@@ -19,7 +19,7 @@ service Publisher {
 
 service Command {
     // Start federated learning with all connected workers
-    rpc Train(TrainRequest) returns (TrainResponse) {}
+    rpc Train(TrainRequest) returns (stream TrainResponse) {}
 }
 
 message TrainRequest {
@@ -27,5 +27,7 @@ message TrainRequest {
 }
 
 message TrainResponse {
-    bytes weights = 1;
+    string job_id = 1;
+    uint64 round = 2;
+    bytes weights = 3;
 }

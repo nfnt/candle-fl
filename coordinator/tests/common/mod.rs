@@ -37,7 +37,7 @@ impl TestCoordinator {
         let incoming = TcpListenerStream::new(listener);
 
         let state = State::new();
-        let command_service = CommandService::new(FedAvg::new(state.clone()));
+        let command_service = CommandService::new(FedAvg::new(), state.clone());
         let publisher_service = PublisherService::new(state.clone());
         let subscriber_service = SubscriberService::new(state);
 

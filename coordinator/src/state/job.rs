@@ -66,9 +66,9 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn new(workers: Vec<Worker>) -> Self {
+    pub fn new(id: Uuid, workers: Vec<Worker>) -> Self {
         Self {
-            id: Uuid::new_v4(),
+            id,
             workers,
             tasks: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -350,7 +350,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_weights_no_workers_errors_immediately() {
-        let job = Job::new(vec![]);
+        let job = Job::new(Uuid::new_v4(), vec![]);
         let job_id = job.id();
 
         let Err(err) = job.start_get_weights(None) else {
@@ -362,7 +362,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_weights_disconnected_worker_errors_instead_of_hanging() {
-        let job = Job::new(vec![disconnected_worker("127.0.0.1:1")]);
+        let job = Job::new(Uuid::new_v4(), vec![disconnected_worker("127.0.0.1:1")]);
 
         let future = job.start_get_weights(None).unwrap();
         let result = tokio::time::timeout(Duration::from_secs(5), future)
@@ -376,7 +376,7 @@ mod tests {
     async fn get_weights_disconnect_after_send_errors_instead_of_hanging() {
         let (worker, mut receiver) = connected_worker("127.0.0.1:1");
         let addr = worker.addr();
-        let job = Job::new(vec![worker]);
+        let job = Job::new(Uuid::new_v4(), vec![worker]);
 
         let future = job.start_get_weights(None).unwrap();
 
@@ -402,7 +402,7 @@ mod tests {
     async fn get_weights_success() {
         let (worker, mut receiver) = connected_worker("127.0.0.1:1");
         let addr = worker.addr();
-        let job = Job::new(vec![worker]);
+        let job = Job::new(Uuid::new_v4(), vec![worker]);
 
         let future = job.start_get_weights(None).unwrap();
 
@@ -429,7 +429,7 @@ mod tests {
         let (worker, _receiver) = connected_worker("127.0.0.1:1");
         // Keep the receiver alive (so the failure is a deadline, not a
         // disconnect) but never reply.
-        let job = Job::new(vec![worker]);
+        let job = Job::new(Uuid::new_v4(), vec![worker]);
 
         let future = job
             .start_get_weights(Some(Duration::from_millis(20)))
@@ -443,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn fit_round_no_workers_errors_immediately() {
-        let job = Job::new(vec![]);
+        let job = Job::new(Uuid::new_v4(), vec![]);
         let job_id = job.id();
 
         let Err(err) = job.start_fit_round(&tensor_map(1.0), None) else {
@@ -455,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn fit_round_all_workers_disconnected_errors_instead_of_hanging() {
-        let job = Job::new(vec![
+        let job = Job::new(Uuid::new_v4(), vec![
             disconnected_worker("127.0.0.1:1"),
             disconnected_worker("127.0.0.1:2"),
         ]);
@@ -474,7 +474,7 @@ mod tests {
         let bad = disconnected_worker("127.0.0.1:2");
         let good_addr = good.addr();
 
-        let job = Job::new(vec![good, bad]);
+        let job = Job::new(Uuid::new_v4(), vec![good, bad]);
 
         let future = job.start_fit_round(&tensor_map(1.0), None).unwrap();
 
@@ -540,7 +540,7 @@ mod tests {
         // not something fixed here.
         let (worker, _receiver) = connected_worker("127.0.0.1:1");
         let addr = worker.addr();
-        let job = Job::new(vec![worker]);
+        let job = Job::new(Uuid::new_v4(), vec![worker]);
 
         let future = job
             .start_get_weights(Some(Duration::from_millis(20)))
@@ -556,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_result_unknown_completer() {
-        let job = Job::new(vec![]);
+        let job = Job::new(Uuid::new_v4(), vec![]);
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         let err = job.set_result(addr, tensor_map(1.0)).unwrap_err();

@@ -64,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match message {
             candlefl::coordinator_message::Message::WeightsRequest(weights_request) => {
-                info!(job_id = weights_request.job_id, "received WeightsRequest");
+                info!(job_id = %weights_request.job_id, "received WeightsRequest");
 
                 let channel = channel.clone();
                 let dev = dev.clone();
@@ -73,12 +73,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 task::spawn(async move {
                     match handle_weights_request(FashionMnistTrainer, dev, job_id.clone()).await {
                         Ok(message) => send(channel, message, &job_id, "WeightsResponse").await,
-                        Err(e) => debug!(job_id, "failed to prepare model: {}", e),
+                        Err(e) => debug!(%job_id, "failed to prepare model: {}", e),
                     }
                 });
             }
             candlefl::coordinator_message::Message::FitRequest(fit_request) => {
-                info!(job_id = fit_request.job_id, "received FitRequest");
+                info!(job_id = %fit_request.job_id, "received FitRequest");
 
                 let channel = channel.clone();
                 let dev = dev.clone();
@@ -90,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .await
                     {
                         Ok(message) => send(channel, message, &job_id, "FitResponse").await,
-                        Err(e) => debug!(job_id, "failed to train model: {}", e),
+                        Err(e) => debug!(%job_id, "failed to train model: {}", e),
                     }
                 });
             }
@@ -102,7 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn send(channel: Channel, message: WorkerMessage, job_id: &str, kind: &str) {
     match PublisherClient::new(channel).publish(message).await {
-        Ok(_) => info!(job_id, "sent {}", kind),
-        Err(status) => debug!(job_id, "failed to send {}: {}", kind, status),
+        Ok(_) => info!(%job_id, "sent {}", kind),
+        Err(status) => debug!(%job_id, "failed to send {}: {}", kind, status),
     }
 }
