@@ -67,6 +67,62 @@ async fn two_workers_two_rounds_produces_the_expected_average() {
 }
 
 #[tokio::test]
+async fn unequal_shards_produce_a_sample_weighted_average() {
+    let coordinator = TestCoordinator::start().await;
+    // Worker A holds a small shard, worker B a much larger one; both the
+    // weight average and the aggregate loss must lean toward B rather than
+    // split the difference evenly.
+    let _worker_a = FakeWorker::connect_with_metrics(coordinator.addr, 2.0, 1.0, 10).await;
+    let _worker_b = FakeWorker::connect_with_metrics(coordinator.addr, 4.0, 3.0, 30).await;
+
+    let responses = tokio::time::timeout(Duration::from_secs(10), train(coordinator.addr, 2))
+        .await
+        .expect("must not hang")
+        .expect("training to succeed");
+
+    assert_eq!(responses.len(), 2);
+
+    let mut worker_addrs_by_round = Vec::new();
+
+    for response in &responses {
+        let tensors = load_buffer(&response.weights, &Device::Cpu).unwrap();
+        // (2.0 * 10 + 4.0 * 30) / 40 = 3.5, not the unweighted 3.0.
+        assert_eq!(
+            tensors.get("a").unwrap().to_vec1::<f64>().unwrap(),
+            vec![3.5, 3.5]
+        );
+
+        let metrics = response.metrics.as_ref().expect("every round has metrics");
+        // (1.0 * 10 + 3.0 * 30) / 40 = 2.5, not the unweighted 2.0.
+        assert_eq!(metrics.loss, 2.5);
+        assert_eq!(metrics.num_examples, 40);
+
+        assert_eq!(metrics.workers.len(), 2);
+        let small = metrics
+            .workers
+            .iter()
+            .find(|w| w.num_examples == 10)
+            .expect("the small shard's worker");
+        assert_eq!(small.loss, 1.0);
+        let large = metrics
+            .workers
+            .iter()
+            .find(|w| w.num_examples == 30)
+            .expect("the large shard's worker");
+        assert_eq!(large.loss, 3.0);
+
+        let mut addrs: Vec<&str> = metrics.workers.iter().map(|w| w.address.as_str()).collect();
+        addrs.sort_unstable();
+        worker_addrs_by_round.push(addrs);
+    }
+
+    // The same two worker addresses label both rounds -- each worker keeps
+    // the same connection (and so the same address) for the life of the
+    // run.
+    assert_eq!(worker_addrs_by_round[0], worker_addrs_by_round[1]);
+}
+
+#[tokio::test]
 async fn a_second_train_is_rejected_while_one_is_already_running() {
     let coordinator = TestCoordinator::start().await;
     let _worker = FakeWorker::connect(coordinator.addr, 1.0).await;

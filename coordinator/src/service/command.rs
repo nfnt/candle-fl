@@ -4,9 +4,9 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
 
 use crate::{
-    candlefl::{TrainRequest, TrainResponse, command_server::Command},
+    candlefl::{self, TrainRequest, TrainResponse, command_server::Command},
     state::State,
-    strategy::{RoundUpdate, Runner, Strategy},
+    strategy::{RoundMetrics, RoundUpdate, Runner, Strategy},
 };
 
 pub struct CommandService<S> {
@@ -68,7 +68,24 @@ fn to_response(update: RoundUpdate) -> Result<TrainResponse, Status> {
         job_id: update.job_id.to_string(),
         round: update.round,
         weights,
+        metrics: update.metrics.map(to_metrics),
     })
+}
+
+fn to_metrics(metrics: RoundMetrics) -> candlefl::RoundMetrics {
+    candlefl::RoundMetrics {
+        loss: metrics.loss,
+        num_examples: metrics.num_examples,
+        workers: metrics
+            .workers
+            .into_iter()
+            .map(|worker| candlefl::WorkerMetrics {
+                address: worker.addr.to_string(),
+                loss: worker.loss,
+                num_examples: worker.num_examples,
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -79,7 +96,10 @@ mod tests {
     use tokio::sync::{Notify, mpsc};
 
     use super::*;
-    use crate::{state::Job, strategy::Error};
+    use crate::{
+        state::Job,
+        strategy::{Error, WorkerMetrics},
+    };
 
     /// A test double that emits `rounds` successful updates, sharing `job`'s
     /// id, and then either succeeds or fails depending on `fails`.
@@ -105,11 +125,27 @@ mod tests {
                     Tensor::new(vec![value, value], &Device::Cpu).unwrap(),
                 );
 
+                // A fixed, recognizable metrics value keyed off 'round', so
+                // a test can assert it survived the trip through
+                // 'to_response' unchanged.
+                #[allow(clippy::cast_precision_loss)]
+                let loss = round as f32;
+                let metrics = RoundMetrics {
+                    loss,
+                    num_examples: round * 10,
+                    workers: vec![WorkerMetrics {
+                        addr: "127.0.0.1:1".parse().unwrap(),
+                        loss,
+                        num_examples: round * 10,
+                    }],
+                };
+
                 if updates
                     .send(RoundUpdate {
                         job_id: job.id(),
                         round,
                         weights,
+                        metrics: Some(metrics),
                     })
                     .await
                     .is_err()
@@ -159,12 +195,36 @@ mod tests {
                 candle_core::safetensors::load_buffer(&response.weights, &Device::Cpu).unwrap();
             let expected = u64::try_from(i + 1).unwrap();
             #[allow(clippy::cast_precision_loss)]
-            let expected = expected as f64;
+            let expected_f64 = expected as f64;
             assert_eq!(
                 weights.get("a").unwrap().to_vec1::<f64>().unwrap(),
-                vec![expected, expected]
+                vec![expected_f64, expected_f64]
             );
+
+            let metrics = response.metrics.as_ref().expect("every round has metrics");
+            #[allow(clippy::cast_precision_loss)]
+            let expected_loss = expected as f32;
+            assert_eq!(metrics.loss, expected_loss);
+            assert_eq!(metrics.num_examples, expected * 10);
+            assert_eq!(metrics.workers.len(), 1);
+            assert_eq!(metrics.workers[0].loss, expected_loss);
+            assert_eq!(metrics.workers[0].num_examples, expected * 10);
+            assert_eq!(metrics.workers[0].address, "127.0.0.1:1");
         }
+    }
+
+    #[test]
+    fn to_response_omits_metrics_for_the_round_0_update() {
+        let response = to_response(RoundUpdate {
+            job_id: uuid::Uuid::new_v4(),
+            round: 0,
+            weights: HashMap::new(),
+            metrics: None,
+        })
+        .unwrap();
+
+        assert_eq!(response.round, 0);
+        assert!(response.metrics.is_none());
     }
 
     #[tokio::test]

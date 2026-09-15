@@ -30,4 +30,18 @@ message TrainResponse {
     string job_id = 1;
     uint64 round = 2;
     bytes weights = 3;
+    // Absent for the round-0 update, which carries initial weights only.
+    RoundMetrics metrics = 4;
+}
+
+message RoundMetrics {
+    float loss = 1;
+    uint64 num_examples = 2;
+    repeated WorkerMetrics workers = 3;
+}
+
+message WorkerMetrics {
+    string address = 1;
+    float loss = 2;
+    uint64 num_examples = 3;
 }
