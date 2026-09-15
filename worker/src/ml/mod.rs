@@ -10,6 +10,17 @@ pub use crate::ml::dataloader::Dataloader;
 mod dataloader;
 mod model;
 
+/// Metrics from one local training run, reported alongside the updated
+/// weights so a `FitRequest`'s caller can see how training actually went.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitMetrics {
+    /// Mean loss per training example over the run.
+    pub loss: f32,
+    /// Number of local examples trained on, used to weight aggregation
+    /// across workers.
+    pub num_examples: u64,
+}
+
 /// Load the full `FashionMNIST` training set.
 ///
 /// # Errors
@@ -49,7 +60,11 @@ fn prepare_model(dev: &Device) -> Result<(VarMap, LeNet), Error> {
 /// # Panics
 ///
 /// Panics if the model's parameter lock is poisoned.
-fn train(weights: &SafeTensors, data: &Dataloader, dev: &Device) -> Result<VarMap, Error> {
+fn train(
+    weights: &SafeTensors,
+    data: &Dataloader,
+    dev: &Device,
+) -> Result<(VarMap, FitMetrics), Error> {
     info!("starting training");
 
     let (varmap, model) = prepare_model(dev)?;
@@ -72,7 +87,7 @@ fn train(weights: &SafeTensors, data: &Dataloader, dev: &Device) -> Result<VarMa
     )?;
 
     let mut sum_loss = 0f32;
-    let mut total = 0;
+    let mut total: u64 = 0;
 
     for batch in data {
         let (inputs, targets) = batch?;
@@ -81,17 +96,29 @@ fn train(weights: &SafeTensors, data: &Dataloader, dev: &Device) -> Result<VarMa
         let loss = loss::nll(&logits_softmax, &targets)?;
 
         optimizer.backward_step(&loss)?;
-        sum_loss += loss.to_vec0::<f32>()?;
-        total += inputs.dims()[0];
+
+        let batch_size = inputs.dims()[0];
+        // 'batch_size' is bounded by the dataloader's batch size, far below
+        // f32's 24-bit mantissa.
+        #[allow(clippy::cast_precision_loss)]
+        let batch_size_f32 = batch_size as f32;
+        sum_loss += loss.to_vec0::<f32>()? * batch_size_f32;
+        total += u64::try_from(batch_size).unwrap_or(u64::MAX);
     }
     // 'total' is a sample count, far below f32's 24-bit mantissa for any
     // dataset this trains on.
     #[allow(clippy::cast_precision_loss)]
     let avg_loss = sum_loss / total as f32;
 
-    info!(loss = avg_loss, "completed training");
+    info!(loss = avg_loss, examples = total, "completed training");
 
-    Ok(varmap)
+    Ok((
+        varmap,
+        FitMetrics {
+            loss: avg_loss,
+            num_examples: total,
+        },
+    ))
 }
 
 /// How a worker turns a coordinator request into updated model weights.
@@ -109,12 +136,12 @@ pub trait Trainer: Send + Sync + 'static {
     fn prepare_weights(&self, dev: &Device) -> Result<VarMap, Error>;
 
     /// Train on local data starting from `weights`, returning the updated
-    /// weights, for a `FitRequest`.
+    /// weights and this run's metrics.
     ///
     /// # Errors
     ///
     /// Returns an error if training fails.
-    fn train(&self, weights: &SafeTensors, dev: &Device) -> Result<VarMap, Error>;
+    fn train(&self, weights: &SafeTensors, dev: &Device) -> Result<(VarMap, FitMetrics), Error>;
 }
 
 /// The real trainer used by the `worker` binary: `LeNet` on the full
@@ -127,7 +154,7 @@ impl Trainer for FashionMnistTrainer {
         prepare_model(dev).map(|(varmap, _model)| varmap)
     }
 
-    fn train(&self, weights: &SafeTensors, dev: &Device) -> Result<VarMap, Error> {
+    fn train(&self, weights: &SafeTensors, dev: &Device) -> Result<(VarMap, FitMetrics), Error> {
         let data = prepare_data(dev)?;
         train(weights, &data, dev)
     }
@@ -203,7 +230,21 @@ mod tests {
 
         let data = synthetic_data(16, 8);
 
-        let result = train(&initial, &data, &dev).unwrap();
+        let (result, metrics) = train(&initial, &data, &dev).unwrap();
+
+        // 16 examples across two batches of 8 -- the per-batch means must
+        // have been weighted by batch size, not just summed, for this to
+        // come out as the total example count rather than the batch count.
+        assert_eq!(metrics.num_examples, 16);
+        // An untrained 10-class model's NLL loss starts around ln(10) ~=
+        // 2.3 per example. If the loss were still accidentally divided by
+        // the batch size on top of the sample count (the bug this weighting
+        // fixes), it would instead read around 2.3 / 8 ~= 0.29.
+        assert!(
+            (1.5..3.5).contains(&metrics.loss),
+            "loss {} outside the plausible per-example NLL range for an untrained model",
+            metrics.loss
+        );
 
         let after_data = result.data().lock().unwrap();
         assert_eq!(after_data.len(), before.len());

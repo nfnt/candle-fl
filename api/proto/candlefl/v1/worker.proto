@@ -17,4 +17,11 @@ message WeightsResponse {
 message FitResponse {
     string job_id = 1;
     bytes weights = 2;
+    // Absent if the worker could not produce metrics for this round.
+    FitMetrics metrics = 3;
+}
+
+message FitMetrics {
+    float loss = 1;
+    uint64 num_examples = 2;
 }

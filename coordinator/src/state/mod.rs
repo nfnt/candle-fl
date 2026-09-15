@@ -19,6 +19,29 @@ mod job;
 mod store;
 mod worker;
 
+/// Metrics from one worker's local training run, mirroring
+/// `candlefl::FitMetrics` on the wire but decoupled from it so the state
+/// module doesn't depend on the generated proto types.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitMetrics {
+    pub loss: f32,
+    pub num_examples: u64,
+}
+
+#[derive(Debug)]
+pub struct WorkerUpdate {
+    pub weights: HashMap<String, Tensor>,
+    /// `None` for a `WeightsResponse`, which involves no training.
+    pub metrics: Option<FitMetrics>,
+}
+
+#[derive(Debug)]
+pub struct WorkerFitResult {
+    pub addr: SocketAddr,
+    pub weights: HashMap<String, Tensor>,
+    pub metrics: Option<FitMetrics>,
+}
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("unknown job \"{0}\"")]
@@ -109,7 +132,7 @@ impl Job<'_> {
     pub async fn fit_round(
         &self,
         weights: HashMap<String, Tensor>,
-    ) -> Result<Vec<HashMap<String, Tensor>>, Error> {
+    ) -> Result<Vec<WorkerFitResult>, Error> {
         let (response, receiver) = oneshot::channel();
         self.state
             .sender
@@ -163,7 +186,7 @@ impl Job<'_> {
 /// use std::collections::HashMap;
 ///
 /// use candle_core::{Device, Tensor};
-/// use coordinator::state::State;
+/// use coordinator::state::{State, WorkerUpdate};
 /// use tokio::sync::mpsc;
 ///
 /// let state = State::new();
@@ -182,7 +205,8 @@ impl Job<'_> {
 ///         receiver.recv().await.expect("a WeightsRequest");
 ///         let mut weights = HashMap::new();
 ///         weights.insert("a".to_string(), Tensor::new(vec![1.0, 1.0], &Device::Cpu)?);
-///         state.set_fit_result(job_id, addr, weights).await
+///         let update = WorkerUpdate { weights, metrics: None };
+///         state.set_fit_result(job_id, addr, update).await
 ///     })
 /// };
 ///
@@ -277,14 +301,14 @@ impl State {
         &self,
         job_id: Uuid,
         addr: SocketAddr,
-        weights: HashMap<String, Tensor>,
+        update: WorkerUpdate,
     ) -> Result<(), Error> {
         let (response, receiver) = oneshot::channel();
         self.sender
             .send(Command::SetFitResult {
                 job_id,
                 addr,
-                weights,
+                update,
                 response,
             })
             .await
@@ -321,12 +345,12 @@ enum Command {
     FitRound {
         job_id: Uuid,
         weights: HashMap<String, Tensor>,
-        response: CommandResponse<Vec<HashMap<String, Tensor>>>,
+        response: CommandResponse<Vec<WorkerFitResult>>,
     },
     SetFitResult {
         job_id: Uuid,
         addr: SocketAddr,
-        weights: HashMap<String, Tensor>,
+        update: WorkerUpdate,
         response: CommandResponse<()>,
     },
 }
@@ -408,12 +432,12 @@ async fn handler<S: Store>(
             Command::SetFitResult {
                 job_id,
                 addr,
-                weights,
+                update,
                 response,
             } => {
                 let result = store.job_mut(job_id).map_or_else(
                     || Err(Error::UnknownJob(job_id)),
-                    |job| job.set_result(addr, weights),
+                    |job| job.set_result(addr, update),
                 );
                 reply(response, result);
             }
@@ -437,6 +461,13 @@ mod tests {
             Tensor::new(vec![value, value], &Device::Cpu).unwrap(),
         );
         map
+    }
+
+    fn worker_update(value: f64) -> WorkerUpdate {
+        WorkerUpdate {
+            weights: tensor_map(value),
+            metrics: None,
+        }
     }
 
     // A `Job` handle for a job_id the state doesn't know about, to exercise
@@ -475,7 +506,7 @@ mod tests {
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
         let err = state
-            .set_fit_result(Uuid::new_v4(), addr, tensor_map(1.0))
+            .set_fit_result(Uuid::new_v4(), addr, worker_update(1.0))
             .await
             .unwrap_err();
 
@@ -492,7 +523,7 @@ mod tests {
         let job = state.add_job(Uuid::new_v4()).await;
 
         let err = state
-            .set_fit_result(job.id(), addr, tensor_map(1.0))
+            .set_fit_result(job.id(), addr, worker_update(1.0))
             .await
             .unwrap_err();
 
@@ -530,7 +561,7 @@ mod tests {
                     Some(crate::candlefl::coordinator_message::Message::WeightsRequest(_))
                 ));
                 state
-                    .set_fit_result(job_id, addr, tensor_map(1.0))
+                    .set_fit_result(job_id, addr, worker_update(1.0))
                     .await
                     .unwrap();
             }
@@ -574,7 +605,7 @@ mod tests {
             async move {
                 live_receiver.recv().await.expect("a WeightsRequest");
                 state
-                    .set_fit_result(job_id, live_addr, tensor_map(1.0))
+                    .set_fit_result(job_id, live_addr, worker_update(1.0))
                     .await
                     .unwrap();
             }

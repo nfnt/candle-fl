@@ -1,4 +1,4 @@
-use std::{collections::HashMap, future::Future};
+use std::{collections::HashMap, future::Future, net::SocketAddr};
 
 use candle_core::Tensor;
 use thiserror::Error as ThisError;
@@ -22,12 +22,32 @@ pub enum Error {
     AlreadyRunning(Uuid),
 }
 
+/// One worker's contribution to a round's aggregate metrics.
+#[derive(Clone, Debug)]
+pub struct WorkerMetrics {
+    pub addr: SocketAddr,
+    pub loss: f32,
+    pub num_examples: u64,
+}
+
+/// A round's training metrics: a sample-weighted aggregate plus every
+/// contributing worker's own numbers.
+#[derive(Clone, Debug)]
+pub struct RoundMetrics {
+    pub loss: f32,
+    pub num_examples: u64,
+    pub workers: Vec<WorkerMetrics>,
+}
+
 /// One completed round's aggregate, reported while `fit` is still running.
 #[derive(Debug)]
 pub struct RoundUpdate {
     pub job_id: Uuid,
     pub round: u64,
     pub weights: HashMap<String, Tensor>,
+    /// `None` for the round-0 update, which carries initial weights only --
+    /// no training happened for it.
+    pub metrics: Option<RoundMetrics>,
 }
 
 /// A federated learning strategy: how model weights are fit across

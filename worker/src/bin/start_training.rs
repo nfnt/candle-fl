@@ -39,10 +39,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(response) = response_stream.next().await {
         let response = response?;
 
-        info!(
-            job_id = %response.job_id,
-            "training round {} completed", response.round
-        );
+        match response.metrics {
+            Some(metrics) => {
+                // Per-worker metrics are a variable-length list, so they
+                // don't fit as their own structured fields; fold them into
+                // one field instead of one log line per worker, so a round
+                // still logs exactly once.
+                let workers = metrics
+                    .workers
+                    .iter()
+                    .map(|w| {
+                        format!(
+                            "{}(loss={}, num_examples={})",
+                            w.address, w.loss, w.num_examples
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                info!(
+                    job_id = %response.job_id,
+                    loss = metrics.loss,
+                    num_examples = metrics.num_examples,
+                    workers = %workers,
+                    "training round {} completed", response.round
+                );
+            }
+            None => {
+                info!(
+                    job_id = %response.job_id,
+                    "training round {} completed", response.round
+                );
+            }
+        }
     }
 
     info!(%uri, "training completed");

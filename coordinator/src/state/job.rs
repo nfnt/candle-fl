@@ -46,11 +46,11 @@ use uuid::Uuid;
 
 use crate::{
     candlefl::{CoordinatorMessage, FitRequest, WeightsRequest, coordinator_message},
-    state::{Error, worker::Worker},
+    state::{Error, WorkerFitResult, WorkerUpdate, worker::Worker},
 };
 
-type TaskMap = Arc<Mutex<HashMap<SocketAddr, oneshot::Sender<HashMap<String, Tensor>>>>>;
-type FitOutcome = (SocketAddr, Result<HashMap<String, Tensor>, Error>);
+type TaskMap = Arc<Mutex<HashMap<SocketAddr, oneshot::Sender<WorkerUpdate>>>>;
+type FitOutcome = (SocketAddr, Result<WorkerUpdate, Error>);
 
 pub struct Job {
     id: Uuid,
@@ -108,14 +108,19 @@ impl Job {
 
         let receiver = self.register(worker.addr());
 
-        Ok(send_and_await(
+        let future = send_and_await(
             worker,
             message,
             receiver,
             timeout,
             Arc::clone(&self.tasks),
             job_id,
-        ))
+        );
+
+        // A 'WeightsRequest' involves no training, so only the weights
+        // themselves are of interest here -- any metrics on the update are
+        // meaningless for it and never populated by the caller anyway.
+        Ok(async move { future.await.map(|update| update.weights) })
     }
 
     /// Perform a single round of training on all workers associated with
@@ -132,10 +137,8 @@ impl Job {
         &self,
         weights: &HashMap<String, Tensor>,
         timeout: Option<Duration>,
-    ) -> Result<
-        impl Future<Output = Result<Vec<HashMap<String, Tensor>>, Error>> + Send + 'static,
-        Error,
-    > {
+    ) -> Result<impl Future<Output = Result<Vec<WorkerFitResult>, Error>> + Send + 'static, Error>
+    {
         let job_id = self.id;
 
         if self.workers.is_empty() {
@@ -184,20 +187,16 @@ impl Job {
     /// worker nobody is currently waiting on (the common case, since giving
     /// up always removes the pending entry) is rejected rather than
     /// silently accepted.
-    pub fn set_result(
-        &self,
-        addr: SocketAddr,
-        weights: HashMap<String, Tensor>,
-    ) -> Result<(), Error> {
+    pub fn set_result(&self, addr: SocketAddr, update: WorkerUpdate) -> Result<(), Error> {
         let sender = self.tasks.lock().expect("tasks lock").remove(&addr);
         sender.map_or_else(
             || Err(Error::UnknownCompleter(addr)),
-            |sender| sender.send(weights).map_err(|_| Error::ResultNotSet(addr)),
+            |sender| sender.send(update).map_err(|_| Error::ResultNotSet(addr)),
         )
     }
 
     /// Register a pending request for `addr`, returning the receiving half.
-    fn register(&self, addr: SocketAddr) -> oneshot::Receiver<HashMap<String, Tensor>> {
+    fn register(&self, addr: SocketAddr) -> oneshot::Receiver<WorkerUpdate> {
         let (sender, receiver) = oneshot::channel();
         if self
             .tasks
@@ -229,11 +228,11 @@ impl Job {
 async fn send_and_await(
     worker: Worker,
     message: CoordinatorMessage,
-    mut receiver: oneshot::Receiver<HashMap<String, Tensor>>,
+    mut receiver: oneshot::Receiver<WorkerUpdate>,
     timeout: Option<Duration>,
     tasks: TaskMap,
     job_id: Uuid,
-) -> Result<HashMap<String, Tensor>, Error> {
+) -> Result<WorkerUpdate, Error> {
     let addr = worker.addr();
 
     debug!(job_id = %job_id, addr = %addr, "sending message to worker");
@@ -277,13 +276,17 @@ async fn wait_deadline(timeout: Option<Duration>) {
 async fn collect_fit_results(
     job_id: Uuid,
     mut join_set: task::JoinSet<FitOutcome>,
-) -> Result<Vec<HashMap<String, Tensor>>, Error> {
+) -> Result<Vec<WorkerFitResult>, Error> {
     let mut succeeded = Vec::new();
     let mut failed = 0usize;
 
     while let Some(outcome) = join_set.join_next().await {
         match outcome {
-            Ok((_, Ok(weights))) => succeeded.push(weights),
+            Ok((addr, Ok(update))) => succeeded.push(WorkerFitResult {
+                addr,
+                weights: update.weights,
+                metrics: update.metrics,
+            }),
             Ok((addr, Err(error))) => {
                 warn!(
                     job_id = %job_id,
@@ -331,6 +334,13 @@ mod tests {
             Tensor::new(vec![value, value], &Device::Cpu).unwrap(),
         );
         map
+    }
+
+    fn worker_update(value: f64) -> WorkerUpdate {
+        WorkerUpdate {
+            weights: tensor_map(value),
+            metrics: None,
+        }
     }
 
     /// A worker whose channel is already closed, simulating one that
@@ -408,7 +418,7 @@ mod tests {
 
         let responder = task::spawn(async move {
             receiver.recv().await.expect("a request");
-            job.set_result(addr, tensor_map(1.0)).unwrap();
+            job.set_result(addr, worker_update(1.0)).unwrap();
             job
         });
 
@@ -455,10 +465,13 @@ mod tests {
 
     #[tokio::test]
     async fn fit_round_all_workers_disconnected_errors_instead_of_hanging() {
-        let job = Job::new(Uuid::new_v4(), vec![
-            disconnected_worker("127.0.0.1:1"),
-            disconnected_worker("127.0.0.1:2"),
-        ]);
+        let job = Job::new(
+            Uuid::new_v4(),
+            vec![
+                disconnected_worker("127.0.0.1:1"),
+                disconnected_worker("127.0.0.1:2"),
+            ],
+        );
 
         let future = job.start_fit_round(&tensor_map(1.0), None).unwrap();
         let result = tokio::time::timeout(Duration::from_secs(5), future)
@@ -480,7 +493,7 @@ mod tests {
 
         let responder = task::spawn(async move {
             good_rx.recv().await.expect("a request");
-            job.set_result(good_addr, tensor_map(2.0)).unwrap();
+            job.set_result(good_addr, worker_update(2.0)).unwrap();
             job
         });
 
@@ -491,8 +504,14 @@ mod tests {
 
         responder.await.unwrap();
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].addr, good_addr);
         assert_eq!(
-            result[0].get("a").unwrap().to_vec1::<f64>().unwrap(),
+            result[0]
+                .weights
+                .get("a")
+                .unwrap()
+                .to_vec1::<f64>()
+                .unwrap(),
             vec![2.0, 2.0]
         );
     }
@@ -507,7 +526,7 @@ mod tests {
 
         let mut join_set: task::JoinSet<FitOutcome> = task::JoinSet::new();
         join_set.spawn(async { panic!("simulated worker task panic") });
-        join_set.spawn(async move { (good_addr, Ok(tensor_map(3.0))) });
+        join_set.spawn(async move { (good_addr, Ok(worker_update(3.0))) });
 
         let result = tokio::time::timeout(
             Duration::from_secs(5),
@@ -518,8 +537,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].addr, good_addr);
         assert_eq!(
-            result[0].get("a").unwrap().to_vec1::<f64>().unwrap(),
+            result[0]
+                .weights
+                .get("a")
+                .unwrap()
+                .to_vec1::<f64>()
+                .unwrap(),
             vec![3.0, 3.0]
         );
     }
@@ -550,7 +575,7 @@ mod tests {
             .expect("must not hang");
         assert!(matches!(result, Err(Error::Timeout(_))));
 
-        let late = job.set_result(addr, tensor_map(99.0));
+        let late = job.set_result(addr, worker_update(99.0));
         assert!(matches!(late, Err(Error::UnknownCompleter(a)) if a == addr));
     }
 
@@ -559,7 +584,7 @@ mod tests {
         let job = Job::new(Uuid::new_v4(), vec![]);
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();
 
-        let err = job.set_result(addr, tensor_map(1.0)).unwrap_err();
+        let err = job.set_result(addr, worker_update(1.0)).unwrap_err();
 
         assert!(matches!(err, Error::UnknownCompleter(a) if a == addr));
     }

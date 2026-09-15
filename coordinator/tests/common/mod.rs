@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use candle_core::{Device, Tensor};
 use coordinator::{
     candlefl::{
-        FitResponse, WeightsResponse, WorkerMessage, command_server::CommandServer,
+        FitMetrics, FitResponse, WeightsResponse, WorkerMessage, command_server::CommandServer,
         coordinator_message, publisher_client::PublisherClient, publisher_server::PublisherServer,
         subscriber_client::SubscriberClient, subscriber_server::SubscriberServer, worker_message,
     },
@@ -71,18 +71,50 @@ pub struct FakeWorker {
     task: JoinHandle<()>,
 }
 
+#[derive(Clone, Copy)]
 enum Behavior {
-    /// Reply to every request with a fixed tensor value under key "a".
-    Respond(f64),
+    /// Reply to every request with a fixed tensor value under key "a", and
+    /// a `FitResponse` includes `metrics` iff this is `Some`.
+    Respond {
+        value: f64,
+        metrics: Option<(f32, u64)>,
+    },
     /// Drop the connection instead of replying to the first request
     /// received, simulating a worker that dies mid-round.
     DisconnectOnFirstRequest,
 }
 
 impl FakeWorker {
-    /// Connect and reply to every request with a fixed tensor value.
+    /// Connect and reply to every request with a fixed tensor value and no
+    /// training metrics.
     pub async fn connect(addr: SocketAddr, value: f64) -> Self {
-        Self::run(addr, Behavior::Respond(value)).await
+        Self::run(
+            addr,
+            Behavior::Respond {
+                value,
+                metrics: None,
+            },
+        )
+        .await
+    }
+
+    /// Connect and reply to every `FitRequest` with a fixed tensor value
+    /// and metrics of `(loss, num_examples)`, so a test can drive workers
+    /// with unequal shards.
+    pub async fn connect_with_metrics(
+        addr: SocketAddr,
+        value: f64,
+        loss: f32,
+        num_examples: u64,
+    ) -> Self {
+        Self::run(
+            addr,
+            Behavior::Respond {
+                value,
+                metrics: Some((loss, num_examples)),
+            },
+        )
+        .await
     }
 
     /// Connect, but disconnect instead of replying to the first request --
@@ -116,7 +148,7 @@ impl FakeWorker {
                     return;
                 }
 
-                let Behavior::Respond(value) = behavior else {
+                let Behavior::Respond { value, metrics } = behavior else {
                     unreachable!("handled above");
                 };
                 let weights = fixed_weights(value);
@@ -133,6 +165,8 @@ impl FakeWorker {
                         message: Some(worker_message::Message::FitResponse(FitResponse {
                             job_id: req.job_id,
                             weights: bytes,
+                            metrics: metrics
+                                .map(|(loss, num_examples)| FitMetrics { loss, num_examples }),
                         })),
                     },
                 };

@@ -6,7 +6,7 @@ use tokio::task;
 use tracing::debug;
 
 use crate::{
-    candlefl::{FitResponse, WeightsResponse, WorkerMessage, worker_message},
+    candlefl::{self, FitResponse, WeightsResponse, WorkerMessage, worker_message},
     ml::Trainer,
 };
 
@@ -77,7 +77,7 @@ pub async fn handle_fit_request<T: Trainer>(
 ) -> Result<WorkerMessage, Error> {
     debug!(job_id, "handling FitRequest");
 
-    let varmap = task::spawn_blocking(move || {
+    let (varmap, metrics) = task::spawn_blocking(move || {
         let weights = deserialize(&weights)?;
         trainer.train(&weights, &dev)
     })
@@ -90,6 +90,10 @@ pub async fn handle_fit_request<T: Trainer>(
         message: Some(worker_message::Message::FitResponse(FitResponse {
             job_id,
             weights,
+            metrics: Some(candlefl::FitMetrics {
+                loss: metrics.loss,
+                num_examples: metrics.num_examples,
+            }),
         })),
     })
 }
@@ -129,6 +133,14 @@ mod tests {
     use candle_core::{Tensor, Var, safetensors::Load};
 
     use super::*;
+    use crate::ml::FitMetrics;
+
+    /// A fixed, recognizable metrics value `StubTrainer::train` returns, so
+    /// tests can assert it made it all the way into the `FitResponse`.
+    const STUB_METRICS: FitMetrics = FitMetrics {
+        loss: 0.5,
+        num_examples: 42,
+    };
 
     fn varmap_with(name: &str, values: Vec<f32>) -> VarMap {
         let varmap = VarMap::new();
@@ -153,7 +165,11 @@ mod tests {
             Ok(varmap_with("a", vec![1.0, 1.0]))
         }
 
-        fn train(&self, weights: &SafeTensors, dev: &Device) -> Result<VarMap, CandleError> {
+        fn train(
+            &self,
+            weights: &SafeTensors,
+            dev: &Device,
+        ) -> Result<(VarMap, FitMetrics), CandleError> {
             let varmap = VarMap::new();
             let mut data = varmap.data().lock().unwrap();
             for name in weights.names() {
@@ -162,7 +178,7 @@ mod tests {
                 data.insert(name.to_string(), Var::from_tensor(&doubled)?);
             }
             drop(data);
-            Ok(varmap)
+            Ok((varmap, STUB_METRICS))
         }
     }
 
@@ -174,7 +190,11 @@ mod tests {
             Err(CandleError::Msg("prepare_weights failed".to_string()))
         }
 
-        fn train(&self, _weights: &SafeTensors, _dev: &Device) -> Result<VarMap, CandleError> {
+        fn train(
+            &self,
+            _weights: &SafeTensors,
+            _dev: &Device,
+        ) -> Result<(VarMap, FitMetrics), CandleError> {
             Err(CandleError::Msg("train failed".to_string()))
         }
     }
@@ -232,6 +252,10 @@ mod tests {
         let tensor = tensors.tensor("a").unwrap().load(&Device::Cpu).unwrap();
         // StubTrainer::train doubles each incoming tensor.
         assert_eq!(tensor.to_vec1::<f32>().unwrap(), vec![2.0, 2.0]);
+
+        let metrics = resp.metrics.expect("a FitResponse always carries metrics");
+        assert_eq!(metrics.loss, STUB_METRICS.loss);
+        assert_eq!(metrics.num_examples, STUB_METRICS.num_examples);
     }
 
     #[tokio::test]

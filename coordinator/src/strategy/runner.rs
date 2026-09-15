@@ -169,6 +169,7 @@ mod tests {
                         job_id: job.id(),
                         round,
                         weights,
+                        metrics: None,
                     })
                     .await
                     .is_err()

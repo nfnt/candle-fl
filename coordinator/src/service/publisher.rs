@@ -6,8 +6,8 @@ use tracing::debug;
 use uuid::Uuid;
 
 use crate::{
-    candlefl::{WorkerMessage, publisher_server::Publisher, worker_message},
-    state::State,
+    candlefl::{self, WorkerMessage, publisher_server::Publisher, worker_message},
+    state::{FitMetrics, State, WorkerUpdate},
 };
 
 pub struct PublisherService {
@@ -48,7 +48,14 @@ impl Publisher for PublisherService {
                         .map_err(|e| Status::invalid_argument(format!("invalid weights: {e}")))?;
 
                     self.state
-                        .set_fit_result(job_id, addr, weights)
+                        .set_fit_result(
+                            job_id,
+                            addr,
+                            WorkerUpdate {
+                                weights,
+                                metrics: None,
+                            },
+                        )
                         .await
                         .map_err(|e| Status::from_error(Box::new(e)))?;
                 }
@@ -68,8 +75,10 @@ impl Publisher for PublisherService {
                     let weights = deserialize(&fit_response.weights)
                         .map_err(|e| Status::invalid_argument(format!("invalid weights: {e}")))?;
 
+                    let metrics = to_fit_metrics(fit_response.metrics)?;
+
                     self.state
-                        .set_fit_result(job_id, addr, weights)
+                        .set_fit_result(job_id, addr, WorkerUpdate { weights, metrics })
                         .await
                         .map_err(|e| Status::from_error(Box::new(e)))?;
                 }
@@ -82,6 +91,29 @@ impl Publisher for PublisherService {
 
 fn deserialize(data: &[u8]) -> Result<HashMap<String, Tensor>, candle_core::Error> {
     load_buffer(data, &Device::Cpu)
+}
+
+/// Validate and convert a `FitResponse`'s wire metrics.
+///
+/// Rejects a non-finite or negative loss as invalid rather than letting it
+/// through: this is untrusted network input, and a `NaN` in particular
+/// would silently poison every average it's folded into downstream.
+fn to_fit_metrics(metrics: Option<candlefl::FitMetrics>) -> Result<Option<FitMetrics>, Status> {
+    let Some(metrics) = metrics else {
+        return Ok(None);
+    };
+
+    if !metrics.loss.is_finite() || metrics.loss < 0.0 {
+        return Err(Status::invalid_argument(format!(
+            "invalid loss {}: must be finite and non-negative",
+            metrics.loss
+        )));
+    }
+
+    Ok(Some(FitMetrics {
+        loss: metrics.loss,
+        num_examples: metrics.num_examples,
+    }))
 }
 
 #[cfg(test)]
@@ -152,6 +184,7 @@ mod tests {
                 message: Some(worker_message::Message::FitResponse(FitResponse {
                     job_id: "not-a-uuid".to_string(),
                     weights: vec![],
+                    metrics: None,
                 })),
             },
             "127.0.0.1:1",
@@ -190,6 +223,7 @@ mod tests {
                 message: Some(worker_message::Message::FitResponse(FitResponse {
                     job_id: Uuid::new_v4().to_string(),
                     weights: safetensors::serialize(&tensor_map(1.0), None).unwrap(),
+                    metrics: None,
                 })),
             },
             "127.0.0.1:1",
@@ -198,5 +232,49 @@ mod tests {
         let status = service.publish(request).await.unwrap_err();
 
         assert!(status.message().contains("unknown job"));
+    }
+
+    #[tokio::test]
+    async fn publish_nan_loss_is_invalid_argument() {
+        let service = PublisherService::new(State::new());
+        let request = with_remote_addr(
+            WorkerMessage {
+                message: Some(worker_message::Message::FitResponse(FitResponse {
+                    job_id: Uuid::new_v4().to_string(),
+                    weights: safetensors::serialize(&tensor_map(1.0), None).unwrap(),
+                    metrics: Some(candlefl::FitMetrics {
+                        loss: f32::NAN,
+                        num_examples: 1,
+                    }),
+                })),
+            },
+            "127.0.0.1:1",
+        );
+
+        let status = service.publish(request).await.unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn publish_negative_loss_is_invalid_argument() {
+        let service = PublisherService::new(State::new());
+        let request = with_remote_addr(
+            WorkerMessage {
+                message: Some(worker_message::Message::FitResponse(FitResponse {
+                    job_id: Uuid::new_v4().to_string(),
+                    weights: safetensors::serialize(&tensor_map(1.0), None).unwrap(),
+                    metrics: Some(candlefl::FitMetrics {
+                        loss: -1.0,
+                        num_examples: 1,
+                    }),
+                })),
+            },
+            "127.0.0.1:1",
+        );
+
+        let status = service.publish(request).await.unwrap_err();
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 }
